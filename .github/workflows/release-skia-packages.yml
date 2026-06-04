@@ -20,7 +20,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   SKIA_REPO: https://skia.googlesource.com/skia.git
   SKIA_REF: refs/heads/chrome/m150
   SKIA_LABEL: chrome/m150
@@ -28,7 +27,6 @@ env:
   SKIA_SOURCE_CACHE_EPOCH: v1
   SKIA_OUT_CACHE_EPOCH: v1
   ANDROID_NDK_VERSION: 27.3.13750724
-  ANDROID_NDK_CACHE_EPOCH: v1
   ANDROID_NDK_PATH: /usr/local/lib/android/sdk/ndk/27.3.13750724
 
 jobs:
@@ -116,7 +114,7 @@ jobs:
       SKIA_PACKAGE_TARGET: ${{ matrix.target }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Enable Windows long paths
         if: startsWith(matrix.target, 'windows-')
@@ -125,7 +123,7 @@ jobs:
 
       - name: Restore Skia source cache
         id: restore-source-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: work/skia-source
           key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
@@ -138,7 +136,7 @@ jobs:
       - name: Save Skia source cache
         if: steps.restore-source-cache.outputs.cache-hit != 'true'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: work/skia-source
           key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
@@ -155,37 +153,23 @@ jobs:
           xcrun --sdk macosx --show-sdk-version
           clang++ --version
 
-      - name: Setup Android SDK
-        if: matrix.target == 'android-arm64'
-        uses: android-actions/setup-android@v3
-
-      - name: Restore Android NDK cache
-        id: restore-android-ndk
-        if: matrix.target == 'android-arm64'
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ env.ANDROID_NDK_PATH }}
-          key: android-ndk-${{ runner.os }}-${{ runner.arch }}-${{ env.ANDROID_NDK_VERSION }}-${{ env.ANDROID_NDK_CACHE_EPOCH }}
-
-      - name: Install Android NDK
-        if: matrix.target == 'android-arm64' && steps.restore-android-ndk.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          (yes || true) | sdkmanager --licenses >/dev/null
-          (yes || true) | sdkmanager --install "ndk;$ANDROID_NDK_VERSION"
-
-      - name: Save Android NDK cache
-        if: matrix.target == 'android-arm64' && steps.restore-android-ndk.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.ANDROID_NDK_PATH }}
-          key: android-ndk-${{ runner.os }}-${{ runner.arch }}-${{ env.ANDROID_NDK_VERSION }}-${{ env.ANDROID_NDK_CACHE_EPOCH }}
-
       - name: Configure Android NDK
         if: matrix.target == 'android-arm64'
         shell: bash
         run: |
+          set -euo pipefail
+          android_home="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          sdkmanager="$android_home/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$sdkmanager" ]]; then
+            echo "sdkmanager is missing: $sdkmanager" >&2
+            exit 1
+          fi
+          if [[ ! -d "$ANDROID_NDK_PATH" ]]; then
+            (yes || true) | "$sdkmanager" --licenses >/dev/null
+            (yes || true) | "$sdkmanager" --install "ndk;$ANDROID_NDK_VERSION"
+          fi
           test -d "$ANDROID_NDK_PATH"
+          echo "ANDROID_HOME=$android_home" >> "$GITHUB_ENV"
           echo "ANDROID_NDK=$ANDROID_NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Setup MSVC
@@ -196,7 +180,7 @@ jobs:
 
       - name: Restore Skia out cache
         id: restore-out-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: work/skia-source/out/${{ matrix.target }}
           key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
@@ -207,7 +191,7 @@ jobs:
 
       - name: Save Skia out cache
         if: steps.restore-out-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: work/skia-source/out/${{ matrix.target }}
           key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
@@ -217,7 +201,7 @@ jobs:
         run: bash scripts/build_package.sh package
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: work/package/${{ matrix.target }}
@@ -231,10 +215,10 @@ jobs:
       - build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: work/release-artifacts
 
