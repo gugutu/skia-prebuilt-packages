@@ -28,6 +28,7 @@ generated_include_dir="$package_dir/generated-include"
 args_file="$package_dir/gn_args.txt"
 lib_ext="a"
 combined_lib="$lib_dir/lib_skia.a"
+package_library_target="ui_tree_skia_prebuilt"
 
 if [[ ! -f "$skia/BUILD.gn" ]]; then
   echo "Skia source tree is missing at $skia" >&2
@@ -146,8 +147,60 @@ PY
   fi
 }
 
+prepare_unified_static_package_target() {
+  local build_config="$skia/gn/BUILDCONFIG.gn"
+  local package_gn_dir="$skia/ui_tree_package"
+
+  "$python_cmd" - "$build_config" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = '''set_defaults("component") {
+  configs = default_configs
+  if (!is_component_build) {
+    complete_static_lib = true
+  }
+}
+'''
+replacement = '''set_defaults("component") {
+  configs = default_configs
+}
+'''
+if needle in text:
+    path.write_text(text.replace(needle, replacement))
+elif replacement not in text:
+    raise SystemExit("could not update component static-library defaults")
+PY
+
+  mkdir -p "$package_gn_dir"
+  cat > "$package_gn_dir/BUILD.gn" <<'GN'
+import("../gn/skia.gni")
+
+static_library("ui_tree_skia_prebuilt") {
+  complete_static_lib = true
+  sources = [ "empty.cpp" ]
+  public_deps = [
+    "//:skia",
+    "//modules/skparagraph:skparagraph",
+    "//modules/skresources:skresources",
+    "//modules/skshaper:skshaper",
+    "//modules/skunicode",
+    "//modules/svg:svg",
+  ]
+}
+GN
+  cat > "$package_gn_dir/empty.cpp" <<'CPP'
+namespace ui_tree_skia_prebuilt {
+void anchor() {}
+}
+CPP
+}
+
 mkdir -p "$package_dir"
 patch_dawn_cmake_helpers
+prepare_unified_static_package_target
 
 target_args="$(mktemp)"
 case "$package_target" in
@@ -176,7 +229,8 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   ios-arm64)
-    export SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+    SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+    export SKIA_DAWN_IOS_SYSROOT
     export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
     cat > "$target_args" <<'ARGS'
 target_os="ios"
@@ -191,7 +245,8 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   ios-simulator-arm64)
-    export SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+    SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+    export SKIA_DAWN_IOS_SYSROOT
     export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
     cat > "$target_args" <<'ARGS'
 target_os="ios"
@@ -411,12 +466,7 @@ if [[ "$mode" != "package" ]]; then
   if [[ -x "third_party/ninja/ninja.exe" ]]; then
     ninja_bin="third_party/ninja/ninja.exe"
   fi
-  "$ninja_bin" -C "$out_dir" \
-    :skia \
-    modules/skunicode:skunicode \
-    modules/skshaper:skshaper \
-    modules/skparagraph:skparagraph \
-    modules/svg:svg
+  "$ninja_bin" -C "$out_dir" "ui_tree_package:$package_library_target"
   echo "::endgroup::"
 fi
 
@@ -427,52 +477,23 @@ fi
 rm -rf "$lib_dir" "$include_dir" "$generated_include_dir"
 mkdir -p "$lib_dir" "$include_dir" "$generated_include_dir"
 
-echo "::group::combine static library"
-libs_file="$package_dir/static-archives.txt"
-find "$out_dir" -maxdepth 1 -name "*.$lib_ext" -type f | sort > "$libs_file"
-if [[ ! -s "$libs_file" ]]; then
-  echo "no top-level static archives found under $out_dir" >&2
+echo "::group::copy package static library"
+package_lib_candidates=()
+while IFS= read -r lib; do
+  package_lib_candidates+=("$lib")
+done < <(find "$out_dir" -maxdepth 4 -type f \( \
+  -name "lib${package_library_target}.$lib_ext" -o \
+  -name "${package_library_target}.$lib_ext" \
+\) | sort)
+
+if [[ "${#package_lib_candidates[@]}" -ne 1 ]]; then
+  printf '%s\n' "${package_lib_candidates[@]}"
+  echo "expected exactly one package static library for $package_library_target" >&2
   exit 1
 fi
 
-rm -f "$combined_lib"
-if [[ "$package_target" == windows-* ]]; then
-  lib_rsp="$package_dir/lib.exe.rsp"
-  : > "$lib_rsp"
-  while IFS= read -r lib; do
-    if command -v cygpath >/dev/null 2>&1; then
-      cygpath -w "$lib" >> "$lib_rsp"
-    else
-      echo "$lib" >> "$lib_rsp"
-    fi
-  done < "$libs_file"
-
-  out_arg="$combined_lib"
-  rsp_arg="$lib_rsp"
-  if command -v cygpath >/dev/null 2>&1; then
-    out_arg="$(cygpath -w "$combined_lib")"
-    rsp_arg="$(cygpath -w "$lib_rsp")"
-  fi
-  MSYS2_ARG_CONV_EXCL="*" lib.exe /nologo "/OUT:$out_arg" "@$rsp_arg"
-else
-  if [[ "$(uname -s)" == Darwin ]]; then
-    libtool -static -o "$combined_lib" $(cat "$libs_file")
-  else
-    ar_bin="${AR:-llvm-ar}"
-    if ! command -v "$ar_bin" >/dev/null 2>&1; then
-      ar_bin="ar"
-    fi
-    mri_file="$package_dir/ar.mri"
-    {
-      echo "CREATE $combined_lib"
-      while IFS= read -r lib; do
-        echo "ADDLIB $lib"
-      done < "$libs_file"
-      echo "SAVE"
-      echo "END"
-    } > "$mri_file"
-    "$ar_bin" -M < "$mri_file"
-  fi
+cp "${package_lib_candidates[0]}" "$combined_lib"
+if [[ "$package_target" != windows-* ]]; then
   ranlib "$combined_lib"
 fi
 echo "::endgroup::"
@@ -481,16 +502,12 @@ echo "::group::collect public headers"
 mkdir -p "$include_dir/skia/include"
 cp -R "$skia/include/." "$include_dir/skia/include/"
 mkdir -p "$include_dir/skia/modules" "$include_dir/skia/third_party/externals/dawn/include"
-if [[ -d "$skia/modules" ]]; then
-  for module_include in "$skia"/modules/*/include; do
-    [[ -d "$module_include" ]] || continue
-    module="$(basename "$(dirname "$module_include")")"
-    if find "$out_dir" -maxdepth 1 \( -name "lib${module}*.$lib_ext" -o -name "${module}*.$lib_ext" \) -type f | grep -q .; then
-      mkdir -p "$include_dir/skia/modules/$module/include"
-      cp -R "$module_include/." "$include_dir/skia/modules/$module/include/"
-    fi
-  done
-fi
+for module in skparagraph skresources skshaper skunicode svg; do
+  module_include="$skia/modules/$module/include"
+  [[ -d "$module_include" ]] || continue
+  mkdir -p "$include_dir/skia/modules/$module/include"
+  cp -R "$module_include/." "$include_dir/skia/modules/$module/include/"
+done
 
 echo "::endgroup::"
 

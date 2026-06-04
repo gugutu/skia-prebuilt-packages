@@ -13,9 +13,9 @@ env:
   SKIA_REF_SLUG: chrome-m150
   SKIA_SOURCE_CACHE_EPOCH: v1
   SKIA_OUT_CACHE_EPOCH: v1
-  ANDROID_NDK_VERSION: 27.2.12479018
+  ANDROID_NDK_VERSION: 27.3.13750724
   ANDROID_NDK_CACHE_EPOCH: v1
-  ANDROID_NDK_PATH: /usr/local/lib/android/sdk/ndk/27.2.12479018
+  ANDROID_NDK_PATH: /usr/local/lib/android/sdk/ndk/27.3.13750724
 
 jobs:
   resolve-skia:
@@ -64,7 +64,7 @@ jobs:
             artifact: skia-ios-simulator-arm64
           - target: android-arm64
             runs-on: ubuntu-24.04
-            toolchain: android-ndk-r27c
+            toolchain: android-ndk-r27d
             artifact: skia-android-arm64
           - target: windows-x64
             runs-on: windows-2025
