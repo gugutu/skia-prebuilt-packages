@@ -177,11 +177,11 @@ ARGS
     ;;
   ios-arm64)
     export SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
-    export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="13.0"
+    export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
     cat > "$target_args" <<'ARGS'
 target_os="ios"
 target_cpu="arm64"
-ios_min_target="13.0"
+ios_min_target="15.0"
 skia_use_fonthost_mac=true
 skia_use_freetype=false
 skia_use_fontconfig=false
@@ -192,12 +192,12 @@ ARGS
     ;;
   ios-simulator-arm64)
     export SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-    export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="13.0"
+    export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
     cat > "$target_args" <<'ARGS'
 target_os="ios"
 target_cpu="arm64"
 ios_use_simulator=true
-ios_min_target="13.0"
+ios_min_target="15.0"
 skia_use_fonthost_mac=true
 skia_use_freetype=false
 skia_use_fontconfig=false
@@ -219,6 +219,11 @@ ndk="$android_ndk"
 ndk_api=${ANDROID_API_LEVEL:-29}
 skia_use_fonthost_mac=false
 skia_use_freetype=true
+skia_use_system_freetype2=false
+skia_use_freetype_woff2=false
+skia_use_freetype_svg=true
+skia_use_freetype_zlib=true
+skia_use_freetype_zlib_bundled=true
 skia_use_fontconfig=false
 skia_enable_fontmgr_android=true
 skia_enable_fontmgr_android_ndk=false
@@ -321,6 +326,74 @@ skia_use_system_zlib=false
 ARGS
 cat "$target_args" >> "$args_file"
 rm -f "$target_args"
+
+"$python_cmd" - "$args_file" "$package_target" <<'PY'
+from pathlib import Path
+import sys
+
+args_file = Path(sys.argv[1])
+target = sys.argv[2]
+args = {}
+for line in args_file.read_text().splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    args[key.strip()] = value.strip()
+
+bundled_third_party = {
+    "skia_use_system_icu": "false",
+    "skia_use_system_harfbuzz": "false",
+    "skia_use_system_expat": "false",
+    "skia_use_system_libpng": "false",
+    "skia_use_system_libjpeg_turbo": "false",
+    "skia_use_system_libwebp": "false",
+    "skia_use_system_zlib": "false",
+}
+missing_bundled = [
+    f"{key}={expected}"
+    for key, expected in bundled_third_party.items()
+    if args.get(key) != expected
+]
+if missing_bundled:
+    joined = ", ".join(missing_bundled)
+    raise SystemExit(f"{target}: bundled third-party config is incomplete: {joined}")
+
+graphite_only_backend = {
+    "skia_enable_graphite": "true",
+    "skia_use_dawn": "true",
+    "skia_enable_ganesh": "false",
+    "skia_use_gl": "false",
+    "skia_use_metal": "false",
+    "skia_use_vulkan": "false",
+    "skia_use_direct3d": "false",
+}
+missing_backend = [
+    f"{key}={expected}"
+    for key, expected in graphite_only_backend.items()
+    if args.get(key) != expected
+]
+if missing_backend:
+    joined = ", ".join(missing_backend)
+    raise SystemExit(f"{target}: expected Graphite+Dawn-only backend config: {joined}")
+
+if args.get("skia_use_freetype") == "true":
+    required = {
+        "skia_use_system_freetype2": "false",
+        "skia_use_freetype_woff2": "false",
+        "skia_use_freetype_svg": "true",
+        "skia_use_freetype_zlib": "true",
+        "skia_use_freetype_zlib_bundled": "true",
+    }
+    missing = [
+        f"{key}={expected}"
+        for key, expected in required.items()
+        if args.get(key) != expected
+    ]
+    if missing:
+        joined = ", ".join(missing)
+        raise SystemExit(f"{target}: bundled FreeType config is incomplete: {joined}")
+PY
 
 cd "$skia"
 
@@ -436,7 +509,7 @@ include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
 queue = list(sdk.rglob("*.h"))
 seen = {path.resolve() for path in queue}
 
-def find_in_sdk(current: Path, include: str) -> Path | None:
+def find_in_sdk(current, include):
     candidates = []
     if not include.startswith("/"):
         candidates.append(current.parent / include)
@@ -472,6 +545,7 @@ while queue:
             if resolved not in seen:
                 seen.add(resolved)
                 queue.append(destination)
+PY
 echo "::endgroup::"
 
 echo "::group::generate dawn headers"
