@@ -1,10 +1,23 @@
-name: Build Skia packages
+name: Release Skia packages
 
 on:
   workflow_dispatch:
+    inputs:
+      package_tag:
+        description: "Release tag, for example skia-m150.0"
+        required: true
+        type: string
   push:
-    branches:
-      - main
+    tags:
+      - "skia-m*"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.package_tag || github.ref_name }}
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -24,19 +37,39 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       skia_commit: ${{ steps.resolve-skia.outputs.skia_commit }}
+      package_tag: ${{ steps.resolve-skia.outputs.package_tag }}
     steps:
       - name: Resolve Skia commit
         id: resolve-skia
         shell: bash
         run: |
           set -euo pipefail
+          package_tag="${{ inputs.package_tag || github.ref_name }}"
+          if [[ -z "$package_tag" ]]; then
+            echo "Missing package tag" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${GITHUB_REF_NAME}" != "main" ]]; then
+            echo "Manual releases must run from main, got ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          expected_prefix="skia-${SKIA_LABEL#chrome/}."
+          if [[ "$package_tag" != "$expected_prefix"* ]]; then
+            echo "Tag $package_tag does not match configured $SKIA_LABEL package prefix $expected_prefix" >&2
+            exit 1
+          fi
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$package_tag" | awk '{print $1}')"
+          if [[ -n "$remote_tag" && "$remote_tag" != "$GITHUB_SHA" ]]; then
+            echo "Tag $package_tag already exists at $remote_tag, not current workflow commit $GITHUB_SHA" >&2
+            exit 1
+          fi
           commit="$(git ls-remote "$SKIA_REPO" "$SKIA_REF" | awk '{print $1}')"
           if [[ -z "$commit" ]]; then
             echo "Could not resolve $SKIA_REF from $SKIA_REPO" >&2
             exit 1
           fi
+          echo "package_tag=$package_tag" >> "$GITHUB_OUTPUT"
           echo "skia_commit=$commit" >> "$GITHUB_OUTPUT"
-          echo "SKIA_COMMIT=$commit" >> "$GITHUB_ENV"
 
   build:
     name: build ${{ matrix.target }}
@@ -79,6 +112,7 @@ jobs:
             msvc_arch: x64_arm64
     env:
       SKIA_COMMIT: ${{ needs.resolve-skia.outputs.skia_commit }}
+      SKIA_PACKAGE_TAG: ${{ needs.resolve-skia.outputs.package_tag }}
       SKIA_PACKAGE_TARGET: ${{ matrix.target }}
 
     steps:
@@ -111,8 +145,7 @@ jobs:
 
       - name: Verify Skia source cache
         shell: bash
-        run: |
-          test -f work/skia-source/BUILD.gn
+        run: test -f work/skia-source/BUILD.gn
 
       - name: Show Xcode toolchain
         if: startsWith(matrix.runs-on, 'macos-')
@@ -189,4 +222,61 @@ jobs:
           name: ${{ matrix.artifact }}
           path: work/package/${{ matrix.target }}
           compression-level: 0
-          retention-days: 7
+          retention-days: 1
+
+  publish:
+    name: publish release
+    needs:
+      - resolve-skia
+      - build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: work/release-artifacts
+
+      - name: Install release archiver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v zstd >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zstd
+          fi
+
+      - name: Create release assets
+        shell: bash
+        env:
+          SKIA_PACKAGE_TAG: ${{ needs.resolve-skia.outputs.package_tag }}
+        run: bash scripts/create_release_assets.sh work/release-artifacts work/release-assets
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.resolve-skia.outputs.package_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(
+            work/release-assets/*.tar.zst
+            work/release-assets/*.tar.gz
+            work/release-assets/*.zip
+            work/release-assets/manifest.json
+            work/release-assets/checksums.txt
+          )
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No release assets found" >&2
+            exit 1
+          fi
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG_NAME" "${assets[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "$TAG_NAME" \
+              --notes-file work/release-assets/release-notes.md
+          fi

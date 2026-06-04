@@ -4,6 +4,10 @@ set -euo pipefail
 mode="${1:-all}"
 skia_ref="${SKIA_REF:-refs/heads/chrome/m150}"
 skia_label="${SKIA_LABEL:-chrome/m150}"
+package_tag="${SKIA_PACKAGE_TAG:-}"
+if [[ -z "$package_tag" && "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+  package_tag="${GITHUB_REF_NAME:-}"
+fi
 package_target="${SKIA_PACKAGE_TARGET:-macos-arm64}"
 python_cmd="${PYTHON:-python3}"
 if ! command -v "$python_cmd" >/dev/null 2>&1; then
@@ -25,6 +29,7 @@ package_dir="$root/work/package/$package_target"
 lib_dir="$package_dir/lib"
 include_dir="$package_dir/include"
 generated_include_dir="$package_dir/generated-include"
+license_dir="$package_dir/LICENSES"
 args_file="$package_dir/gn_args.txt"
 lib_ext="a"
 combined_lib="$lib_dir/lib_skia.a"
@@ -487,8 +492,8 @@ if [[ "$mode" == "build" ]]; then
   exit 0
 fi
 
-rm -rf "$lib_dir" "$include_dir" "$generated_include_dir"
-mkdir -p "$lib_dir" "$include_dir" "$generated_include_dir"
+rm -rf "$lib_dir" "$include_dir" "$generated_include_dir" "$license_dir"
+mkdir -p "$lib_dir" "$include_dir" "$generated_include_dir" "$license_dir"
 
 echo "::group::copy package static library"
 package_lib_candidates=()
@@ -706,5 +711,210 @@ include_path=include/skia
 include_path=include/skia/third_party/externals/dawn/include
 include_path=generated-include/include
 EOF
+
+echo "::group::collect licenses"
+"$python_cmd" - "$skia" "$license_dir" <<'PY'
+from pathlib import Path
+import json
+import shutil
+import sys
+
+skia = Path(sys.argv[1])
+license_dir = Path(sys.argv[2])
+license_dir.mkdir(parents=True, exist_ok=True)
+
+roots = [
+    ("skia", skia),
+    ("dawn", skia / "third_party/externals/dawn"),
+    ("expat", skia / "third_party/externals/expat"),
+    ("freetype2", skia / "third_party/externals/freetype2"),
+    ("harfbuzz", skia / "third_party/externals/harfbuzz"),
+    ("libgrapheme", skia / "third_party/externals/libgrapheme"),
+    ("libjpeg-turbo", skia / "third_party/externals/libjpeg-turbo"),
+    ("libpng", skia / "third_party/externals/libpng"),
+    ("libwebp", skia / "third_party/externals/libwebp"),
+    ("wuffs", skia / "third_party/externals/wuffs"),
+    ("zlib", skia / "third_party/externals/zlib"),
+]
+
+license_names = {
+    "license",
+    "license.md",
+    "license.txt",
+    "copying",
+    "copying.md",
+    "copying.txt",
+    "copyright",
+    "copyright.md",
+    "copyright.txt",
+    "notice",
+    "notice.md",
+    "notice.txt",
+    "patents",
+}
+
+copied = []
+for label, root in roots:
+    if not root.exists():
+        continue
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        if name not in license_names and not name.startswith(("license.", "copying.", "copyright.", "notice.")):
+            continue
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            relative = Path(path.name)
+        destination = license_dir / label / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, destination)
+        copied.append(
+            {
+                "component": label,
+                "source": str(path.relative_to(skia)),
+                "package_path": str(destination.relative_to(license_dir)),
+            }
+        )
+
+readme = license_dir / "README.md"
+readme.write_text(
+    "# License files\n\n"
+    "This package bundles Skia and selected third-party dependencies into a "
+    "static library. License, notice, copying, copyright, and patent files "
+    "found in the bundled source components are copied here. The exact Skia "
+    "revision and build configuration are recorded in `../metadata.json` and "
+    "`../gn_args.txt`.\n",
+    encoding="utf-8",
+)
+(license_dir / "manifest.json").write_text(
+    json.dumps({"files": copied}, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+echo "::endgroup::"
+
+echo "::group::write package metadata"
+"$python_cmd" - \
+  "$package_dir/metadata.json" \
+  "$args_file" \
+  "$package_target" \
+  "$skia_ref" \
+  "$skia_label" \
+  "$package_tag" \
+  "$(git -C "$skia" rev-parse HEAD)" \
+  "$(basename "$combined_lib")" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+metadata_path = Path(sys.argv[1])
+args_file = Path(sys.argv[2])
+target = sys.argv[3]
+skia_ref = sys.argv[4]
+skia_label = sys.argv[5]
+package_tag = sys.argv[6]
+skia_commit = sys.argv[7]
+library = sys.argv[8]
+
+gn_args = {}
+for line in args_file.read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    gn_args[key.strip()] = value.strip()
+
+target_link = {
+    "macos-arm64": {
+        "rust_target": "aarch64-apple-darwin",
+        "frameworks": ["AppKit", "CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "Metal", "QuartzCore"],
+        "system_libs": ["c++"],
+        "min_os": "macos11",
+    },
+    "macos-x64": {
+        "rust_target": "x86_64-apple-darwin",
+        "frameworks": ["AppKit", "CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "Metal", "QuartzCore"],
+        "system_libs": ["c++"],
+        "min_os": "macos11",
+    },
+    "ios-arm64": {
+        "rust_target": "aarch64-apple-ios",
+        "frameworks": ["CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "Metal", "QuartzCore", "UIKit"],
+        "system_libs": ["c++"],
+        "min_os": "ios15",
+    },
+    "ios-simulator-arm64": {
+        "rust_target": "aarch64-apple-ios-sim",
+        "frameworks": ["CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "Metal", "QuartzCore", "UIKit"],
+        "system_libs": ["c++"],
+        "min_os": "ios15",
+    },
+    "android-arm64": {
+        "rust_target": "aarch64-linux-android",
+        "frameworks": [],
+        "system_libs": ["android", "c++_static", "log"],
+        "min_os": "android29",
+    },
+    "windows-x64": {
+        "rust_target": "x86_64-pc-windows-msvc",
+        "frameworks": [],
+        "system_libs": ["d3d12", "dxgi", "dxguid", "dwrite", "gdi32", "ole32", "user32", "windowscodecs"],
+        "min_os": "windows10",
+    },
+    "windows-arm64": {
+        "rust_target": "aarch64-pc-windows-msvc",
+        "frameworks": [],
+        "system_libs": ["d3d12", "dxgi", "dxguid", "dwrite", "gdi32", "ole32", "user32", "windowscodecs"],
+        "min_os": "windows10",
+    },
+}
+
+if target not in target_link:
+    raise SystemExit(f"missing metadata target mapping: {target}")
+
+metadata = {
+    "schema_version": 1,
+    "target": target,
+    "skia_ref": skia_ref,
+    "skia_label": skia_label,
+    "package_tag": package_tag or None,
+    "skia_commit": skia_commit,
+    "library_kind": "static",
+    "libraries": [f"lib/{library}"],
+    "include_dirs": [
+        "include/skia",
+        "include/skia/third_party/externals/dawn/include",
+        "generated-include/include",
+    ],
+    "cxx_standard": "c++20",
+    "backend": {
+        "graphite": True,
+        "dawn": True,
+        "ganesh": False,
+    },
+    "features": {
+        "skparagraph": True,
+        "skshaper": True,
+        "skunicode": "libgrapheme",
+        "svg": True,
+        "codec_png": True,
+        "codec_jpeg": True,
+        "codec_webp": True,
+        "pdf": False,
+        "skottie": False,
+        "icu": False,
+        "icu4x": False,
+    },
+    "link": target_link[target],
+    "gn_args_file": "gn_args.txt",
+    "license_dir": "LICENSES",
+    "gn_args": gn_args,
+}
+
+metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+echo "::endgroup::"
 
 ls -lh "$combined_lib"
