@@ -13,6 +13,9 @@ env:
   SKIA_REF_SLUG: chrome-m150
   SKIA_SOURCE_CACHE_EPOCH: v1
   SKIA_OUT_CACHE_EPOCH: v1
+  ANDROID_NDK_VERSION: 27.2.12479018
+  ANDROID_NDK_CACHE_EPOCH: v1
+  ANDROID_NDK_PATH: /usr/local/lib/android/sdk/ndk/27.2.12479018
 
 jobs:
   resolve-skia:
@@ -122,13 +125,34 @@ jobs:
         if: matrix.target == 'android-arm64'
         uses: android-actions/setup-android@v3
 
-      - name: Install Android NDK
+      - name: Restore Android NDK cache
+        id: restore-android-ndk
         if: matrix.target == 'android-arm64'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.ANDROID_NDK_PATH }}
+          key: android-ndk-${{ runner.os }}-${{ runner.arch }}-${{ env.ANDROID_NDK_VERSION }}-${{ env.ANDROID_NDK_CACHE_EPOCH }}
+
+      - name: Install Android NDK
+        if: matrix.target == 'android-arm64' && steps.restore-android-ndk.outputs.cache-hit != 'true'
         shell: bash
         run: |
           (yes || true) | sdkmanager --licenses >/dev/null
-          (yes || true) | sdkmanager --install "ndk;27.2.12479018"
-          echo "ANDROID_NDK=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          (yes || true) | sdkmanager --install "ndk;$ANDROID_NDK_VERSION"
+
+      - name: Save Android NDK cache
+        if: matrix.target == 'android-arm64' && steps.restore-android-ndk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.ANDROID_NDK_PATH }}
+          key: android-ndk-${{ runner.os }}-${{ runner.arch }}-${{ env.ANDROID_NDK_VERSION }}-${{ env.ANDROID_NDK_CACHE_EPOCH }}
+
+      - name: Configure Android NDK
+        if: matrix.target == 'android-arm64'
+        shell: bash
+        run: |
+          test -d "$ANDROID_NDK_PATH"
+          echo "ANDROID_NDK=$ANDROID_NDK_PATH" >> "$GITHUB_ENV"
 
       - name: Setup MSVC
         if: startsWith(matrix.target, 'windows-')
