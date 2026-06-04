@@ -105,12 +105,12 @@ echo "::endgroup::"
 
 echo "::group::ninja $variant"
 third_party/ninja/ninja -C "$out_dir" \
-  //:skia \
-  //modules/skunicode:skunicode \
-  //modules/skshaper:skshaper \
-  //modules/skparagraph:skparagraph \
-  //modules/svg:svg \
-  //modules/skottie:skottie
+  :skia \
+  modules/skunicode:skunicode \
+  modules/skshaper:skshaper \
+  modules/skparagraph:skparagraph \
+  modules/svg:svg \
+  modules/skottie:skottie
 echo "::endgroup::"
 
 echo "::group::collect static archives"
