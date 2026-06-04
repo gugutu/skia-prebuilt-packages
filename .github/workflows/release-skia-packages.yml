@@ -314,4 +314,5 @@ jobs:
           gh release create "$TAG_NAME" "${assets[@]}" \
             --target "$GITHUB_SHA" \
             --title "$TAG_NAME" \
+            --prerelease \
             --notes-file work/release-assets/release-notes.md
