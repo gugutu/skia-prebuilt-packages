@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       package_tag:
-        description: "Release tag, for example skia-m150.0"
+        description: "Immutable package tag, for example skia-chrome-m150-r0"
         required: true
         type: string
   push:
     tags:
-      - "skia-m*"
+      - "skia-chrome-m*-r*"
 
 permissions:
   actions: read
@@ -36,12 +36,16 @@ jobs:
     outputs:
       skia_commit: ${{ steps.resolve-skia.outputs.skia_commit }}
       package_tag: ${{ steps.resolve-skia.outputs.package_tag }}
+      release_exists: ${{ steps.resolve-skia.outputs.release_exists }}
     steps:
       - name: Resolve Skia commit
         id: resolve-skia
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          release_exists=false
           package_tag="${{ inputs.package_tag || github.ref_name }}"
           if [[ -z "$package_tag" ]]; then
             echo "Missing package tag" >&2
@@ -51,12 +55,13 @@ jobs:
             echo "Manual releases must run from main, got ${GITHUB_REF_NAME}" >&2
             exit 1
           fi
-          expected_prefix="skia-${SKIA_LABEL#chrome/}."
-          if [[ "$package_tag" != "$expected_prefix"* ]]; then
-            echo "Tag $package_tag does not match configured $SKIA_LABEL package prefix $expected_prefix" >&2
+          expected_pattern="^skia-${SKIA_LABEL/\//-}-r[0-9]+$"
+          if [[ ! "$package_tag" =~ $expected_pattern ]]; then
+            echo "Tag $package_tag does not match configured $SKIA_LABEL package pattern $expected_pattern" >&2
             exit 1
           fi
-          remote_tag="$(git ls-remote --tags origin "refs/tags/$package_tag" | awk '{print $1}')"
+          repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          remote_tag="$(git ls-remote --tags --refs "$repo_url" "refs/tags/$package_tag" | awk '{print $1}')"
           if [[ -n "$remote_tag" && "$remote_tag" != "$GITHUB_SHA" ]]; then
             echo "Tag $package_tag already exists at $remote_tag, not current workflow commit $GITHUB_SHA" >&2
             exit 1
@@ -66,12 +71,29 @@ jobs:
             echo "Could not resolve $SKIA_REF from $SKIA_REPO" >&2
             exit 1
           fi
-          echo "package_tag=$package_tag" >> "$GITHUB_OUTPUT"
-          echo "skia_commit=$commit" >> "$GITHUB_OUTPUT"
+          if gh release view "$package_tag" >/dev/null 2>&1; then
+            release_exists=true
+            tmp="$(mktemp -d)"
+            if ! gh release download "$package_tag" --pattern manifest.json --dir "$tmp" >/dev/null 2>&1; then
+              echo "Release $package_tag exists but manifest.json is missing; refusing to mutate immutable release" >&2
+              exit 1
+            fi
+            existing_commit="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("skia_commit", ""))' "$tmp/manifest.json")"
+            if [[ "$existing_commit" != "$commit" ]]; then
+              echo "Release $package_tag already records Skia $existing_commit, current $SKIA_REF resolves to $commit; refusing to mutate immutable release" >&2
+              exit 1
+            fi
+          fi
+          {
+            echo "package_tag=$package_tag"
+            echo "skia_commit=$commit"
+            echo "release_exists=$release_exists"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: build ${{ matrix.target }}
     needs: resolve-skia
+    if: needs.resolve-skia.outputs.release_exists != 'true'
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 360
     strategy:
@@ -213,6 +235,7 @@ jobs:
     needs:
       - resolve-skia
       - build
+    if: needs.resolve-skia.outputs.release_exists != 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -244,6 +267,10 @@ jobs:
           TAG_NAME: ${{ needs.resolve-skia.outputs.package_tag }}
         run: |
           set -euo pipefail
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists and passed immutable manifest validation; leaving assets unchanged."
+            exit 0
+          fi
           shopt -s nullglob
           assets=(
             work/release-assets/*.tar.zst
@@ -256,11 +283,7 @@ jobs:
             echo "No release assets found" >&2
             exit 1
           fi
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
-          else
-            gh release create "$TAG_NAME" "${assets[@]}" \
-              --target "$GITHUB_SHA" \
-              --title "$TAG_NAME" \
-              --notes-file work/release-assets/release-notes.md
-          fi
+          gh release create "$TAG_NAME" "${assets[@]}" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG_NAME" \
+            --notes-file work/release-assets/release-notes.md
