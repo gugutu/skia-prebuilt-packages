@@ -26,7 +26,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import zipfile
 
 artifact_root = Path(sys.argv[1])
 asset_dir = Path(sys.argv[2])
@@ -43,26 +42,19 @@ for metadata_path in sorted(artifact_root.rglob("metadata.json")):
         raise SystemExit(f"duplicate package target found: {target}")
     seen_targets.add(target)
     asset_base = f"{tag}-{target}"
-    if target.startswith("windows-"):
-        archive = asset_dir / f"{asset_base}.zip"
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-            for path in sorted(package_dir.rglob("*")):
-                if path.is_file():
-                    zf.write(path, path.relative_to(package_dir))
+    archive = asset_dir / f"{asset_base}.tar.zst"
+    if shutil.which("zstd"):
+        subprocess.run(
+            f'tar -cf - -C "{package_dir}" . | zstd -T0 -q -o "{archive}"',
+            shell=True,
+            check=True,
+        )
     else:
-        archive = asset_dir / f"{asset_base}.tar.zst"
-        if shutil.which("zstd"):
-            subprocess.run(
-                f'tar -cf - -C "{package_dir}" . | zstd -T0 -q -o "{archive}"',
-                shell=True,
-                check=True,
-            )
-        else:
-            fallback = asset_dir / f"{asset_base}.tar.gz"
-            with tarfile.open(fallback, "w:gz") as tf:
-                for path in sorted(package_dir.rglob("*")):
-                    tf.add(path, path.relative_to(package_dir))
-            archive = fallback
+        fallback = asset_dir / f"{asset_base}.tar.gz"
+        with tarfile.open(fallback, "w:gz") as tf:
+            for path in sorted(package_dir.rglob("*")):
+                tf.add(path, path.relative_to(package_dir))
+        archive = fallback
 
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     packages.append(

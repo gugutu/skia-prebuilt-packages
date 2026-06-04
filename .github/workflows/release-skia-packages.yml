@@ -303,7 +303,6 @@ jobs:
           assets=(
             work/release-assets/*.tar.zst
             work/release-assets/*.tar.gz
-            work/release-assets/*.zip
             work/release-assets/manifest.json
             work/release-assets/checksums.txt
           )
