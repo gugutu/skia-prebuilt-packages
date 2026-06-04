@@ -122,6 +122,11 @@ args_file="$report_dir/gn_args.txt"
 echo "::group::gn gen $variant"
 if [[ "$mode" != "report" ]]; then
   bin/gn gen "$out_dir" --args="$(tr '\n' ' ' < "$args_file")"
+  if [[ -d "$out_dir" ]]; then
+    # GitHub cache preserves object files, but the source checkout refreshes source mtimes.
+    # Refresh restored outputs after GN so Ninja does not rebuild unchanged Skia sources.
+    find "$out_dir" -type f -exec touch {} +
+  fi
 fi
 echo "::endgroup::"
 
