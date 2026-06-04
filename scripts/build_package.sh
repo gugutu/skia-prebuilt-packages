@@ -481,18 +481,25 @@ echo "::group::collect public headers"
 mkdir -p "$include_dir/skia/include"
 cp -R "$skia/include/." "$include_dir/skia/include/"
 mkdir -p "$include_dir/skia/modules" "$include_dir/skia/third_party/externals/dawn/include"
-for module in skcms skparagraph skresources skshaper skunicode svg; do
-  if [[ -d "$skia/modules/$module/include" ]]; then
-    mkdir -p "$include_dir/skia/modules/$module/include"
-    cp -R "$skia/modules/$module/include/." "$include_dir/skia/modules/$module/include/"
-  fi
-done
+if [[ -d "$skia/modules" ]]; then
+  for module_include in "$skia"/modules/*/include; do
+    [[ -d "$module_include" ]] || continue
+    module="$(basename "$(dirname "$module_include")")"
+    if [[ -f "$out_dir/lib$module.$lib_ext" || -f "$out_dir/$module.$lib_ext" ]]; then
+      mkdir -p "$include_dir/skia/modules/$module/include"
+      cp -R "$module_include/." "$include_dir/skia/modules/$module/include/"
+    fi
+  done
+fi
 if [[ -d "$skia/third_party/externals/dawn/include" ]]; then
-  for dawn_include in dawn webgpu; do
-    if [[ -d "$skia/third_party/externals/dawn/include/$dawn_include" ]]; then
-      mkdir -p "$include_dir/skia/third_party/externals/dawn/include/$dawn_include"
-      cp -R "$skia/third_party/externals/dawn/include/$dawn_include/." \
-        "$include_dir/skia/third_party/externals/dawn/include/$dawn_include/"
+  for dawn_include in "$skia"/third_party/externals/dawn/include/*; do
+    [[ -e "$dawn_include" ]] || continue
+    name="$(basename "$dawn_include")"
+    if [[ -d "$dawn_include" ]]; then
+      mkdir -p "$include_dir/skia/third_party/externals/dawn/include/$name"
+      cp -R "$dawn_include/." "$include_dir/skia/third_party/externals/dawn/include/$name/"
+    else
+      cp "$dawn_include" "$include_dir/skia/third_party/externals/dawn/include/$name"
     fi
   done
 fi
@@ -519,6 +526,22 @@ def find_in_sdk(current, include):
             return candidate
     return None
 
+def checkout_header(current, include):
+    path = Path(include)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+
+    relative_current = current.relative_to(sdk)
+    current_relative_include = relative_current.parent / include
+    candidates = [
+        (skia / current_relative_include, current_relative_include),
+        (skia / include, path),
+    ]
+    for candidate, destination_relative in candidates:
+        if candidate.is_file():
+            return candidate, destination_relative
+    return None
+
 while queue:
     header = queue.pop()
     try:
@@ -533,17 +556,18 @@ while queue:
         if find_in_sdk(header, include) is not None:
             continue
 
-        # Some Skia public module headers include narrow private helpers by
-        # repository-root path, for example "src/base/SkUTF.h". Package the
-        # transitive closure of those helpers so consumers do not need a full
-        # Skia checkout in their include path.
-        if include.startswith("src/") and (skia / include).exists():
-            destination = sdk / include
+        # Follow Skia's quoted-include closure by repository-relative filename.
+        # This keeps the package self-contained without manually enumerating
+        # helper paths such as modules/skcms/skcms.h or src/base/SkUTF.h.
+        resolved = checkout_header(header, include)
+        if resolved is not None:
+            source, destination_relative = resolved
+            destination = sdk / destination_relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(skia / include, destination)
-            resolved = destination.resolve()
-            if resolved not in seen:
-                seen.add(resolved)
+            shutil.copy2(source, destination)
+            destination_resolved = destination.resolve()
+            if destination_resolved not in seen:
+                seen.add(destination_resolved)
                 queue.append(destination)
 PY
 echo "::endgroup::"
