@@ -134,7 +134,7 @@ path.write_text(text.replace(needle, insert))
 PY
   fi
 
-  if [[ -f "$build_dawn" ]] && ! grep -q 'TINT_BUILD_CMD_TOOLS=OFF' "$build_dawn"; then
+  if [[ -f "$build_dawn" ]] && ! grep -q 'SKIA_DAWN_TRIM_UNUSED_OPTIONS' "$build_dawn"; then
     "$python_cmd" - "$build_dawn" <<'PY'
 from pathlib import Path
 import sys
@@ -143,11 +143,63 @@ text = path.read_text()
 needle = '''      "-DTINT_ENABLE_INSTALL=OFF",
 '''
 insert = '''      "-DTINT_ENABLE_INSTALL=OFF",
+      # SKIA_DAWN_TRIM_UNUSED_OPTIONS
+      # Skia Graphite/Dawn creates WGSL shader modules and then lets Dawn
+      # translate them to the selected platform backend. Keep WGSL reader and
+      # each enabled backend writer, but do not build optional tools, alternate
+      # shader input paths, unused backends, samples, fuzzers, or debug helpers.
+      "-DDAWN_ENABLE_NULL=OFF",
+      "-DDAWN_ENABLE_WEBGPU_ON_WEBGPU=OFF",
+      "-DDAWN_ENABLE_DESKTOP_GL=OFF",
+      "-DDAWN_ENABLE_ASAN=OFF",
+      "-DDAWN_ENABLE_TSAN=OFF",
+      "-DDAWN_ENABLE_MSAN=OFF",
+      "-DDAWN_ENABLE_UBSAN=OFF",
+      "-DDAWN_ENABLE_RTTI=OFF",
+      "-DDAWN_USE_WAYLAND=OFF",
+      "-DDAWN_USE_X11=OFF",
+      "-DDAWN_USE_WINDOWS_UI=OFF",
+      "-DDAWN_USE_BUILT_DXC=OFF",
+      "-DDAWN_DXC_ENABLE_ASSERTS_IN_NDEBUG=OFF",
+      "-DDAWN_ENABLE_SWIFTSHADER=OFF",
+      "-DDAWN_ALWAYS_ASSERT=OFF",
+      "-DDAWN_BUILD_NODE_BINDINGS=OFF",
+      "-DDAWN_BUILD_FUZZERS=OFF",
+      "-DDAWN_EMIT_COVERAGE=OFF",
       "-DTINT_BUILD_CMD_TOOLS=OFF",
+      "-DTINT_BUILD_SPV_READER=OFF",
+      "-DTINT_BUILD_GLSL_WRITER=OFF",
+      "-DTINT_BUILD_GLSL_VALIDATOR=OFF",
+      "-DTINT_BUILD_WGSL_WRITER=OFF",
+      "-DTINT_BUILD_NULL_WRITER=OFF",
+      "-DTINT_BUILD_FUZZERS=OFF",
+      "-DTINT_BUILD_FUZZER_VULKAN_SUPPORT=OFF",
+      "-DTINT_BUILD_TINTD=OFF",
+      "-DTINT_BUILD_AS_OTHER_OS=OFF",
+      "-DTINT_BUILD_MESA=OFF",
+      "-DTINT_ENABLE_IR_DUMPING=OFF",
+      "-DTINT_ENABLE_IR_VALIDATION_ASSERTS=OFF",
+      "-DTINT_ENABLE_BREAK_IN_DEBUGGER=OFF",
+      "-DTINT_RANDOMIZE_HASHES=OFF",
 '''
 if needle not in text:
     raise SystemExit("could not find Dawn Tint install option")
 path.write_text(text.replace(needle, insert))
+PY
+  fi
+
+  if [[ -f "$build_dawn" ]]; then
+    "$python_cmd" - "$build_dawn" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+old = '''      f"-DDAWN_ENABLE_SPIRV_VALIDATION={gn_bool_to_cmake(args.dawn_enable_vulkan)}",
+'''
+new = '''      "-DDAWN_ENABLE_SPIRV_VALIDATION=OFF",
+'''
+if old in text:
+    path.write_text(text.replace(old, new))
 PY
   fi
 }
@@ -285,6 +337,18 @@ ARGS
       echo "ANDROID_NDK, ANDROID_NDK_HOME, or ANDROID_NDK_ROOT must point to an Android NDK." >&2
       exit 1
     fi
+    android_toolchain=""
+    while IFS= read -r toolchain_bin; do
+      android_toolchain="$(dirname "$toolchain_bin")"
+      break
+    done < <(find "$android_ndk/toolchains/llvm/prebuilt" -path "*/bin/llvm-ar" -type f | sort)
+    if [[ -z "$android_toolchain" ]]; then
+      echo "Could not find llvm-ar under Android NDK: $android_ndk" >&2
+      exit 1
+    fi
+    export AR="$android_toolchain/llvm-ar"
+    export RANLIB="$android_toolchain/llvm-ranlib"
+    export LLVM_NM="$android_toolchain/llvm-nm"
     cat > "$target_args" <<ARGS
 target_os="android"
 target_cpu="arm64"
@@ -509,7 +573,7 @@ copy_package_library() {
   fi
   cp "$source" "$destination"
   if [[ "$package_target" != windows-* ]]; then
-    ranlib "$destination"
+    "${RANLIB:-ranlib}" "$destination"
   fi
   copied_library_names+=("$basename")
 }
@@ -530,22 +594,15 @@ fi
 
 copy_package_library "${package_lib_candidates[0]}" "$package_lib"
 
-dependency_closure_file="$(mktemp)"
-"$python_cmd" "$root/scripts/resolve_static_lib_closure.py" \
+object_closure_work="$package_dir/.object-closure-work"
+object_closure_manifest="$package_dir/object_closure_manifest.json"
+"$python_cmd" "$root/scripts/merge_static_object_closure.py" \
   --root "${package_lib_candidates[0]}" \
+  --package-archive "$package_lib" \
   --candidate-root "$out_dir" \
   --extension "$lib_ext" \
-  --root-package-name "$(basename "$package_lib")" \
-  --output "$dependency_closure_file"
-while IFS=$'\t' read -r linked_lib linked_name; do
-  [[ -n "$linked_lib" ]] || continue
-  [[ -n "$linked_name" ]] || linked_name="$(basename "$linked_lib")"
-  if [[ "$linked_name" == "$(basename "$package_lib")" ]]; then
-    continue
-  fi
-  copy_package_library "$linked_lib" "$lib_dir/$linked_name"
-done < "$dependency_closure_file"
-rm -f "$dependency_closure_file"
+  --work-dir "$object_closure_work" \
+  --manifest "$object_closure_manifest"
 
 if [[ "${#copied_library_names[@]}" -lt 1 ]]; then
   echo "no package libraries were copied" >&2
