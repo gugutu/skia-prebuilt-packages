@@ -28,7 +28,7 @@ jobs:
 
       - name: Restore Skia checkout and out cache
         id: restore-skia-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             work-${{ matrix.variant }}/skia/.git
@@ -76,6 +76,14 @@ jobs:
         with:
           name: report-${{ matrix.variant }}
           path: reports/${{ matrix.variant }}
+
+      - name: Upload stripped static archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: stripped-${{ matrix.variant }}
+          path: work-${{ matrix.variant }}/stripped-libs
+          compression-level: 0
+          retention-days: 7
 
   summarize:
     name: summarize
