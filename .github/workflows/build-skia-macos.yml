@@ -1,4 +1,4 @@
-name: Build Skia macOS size compare
+name: Build Skia packages
 
 on:
   workflow_dispatch:
@@ -7,104 +7,154 @@ on:
       - main
 
 env:
-  SKIA_TAG: canvaskit/0.41.0
-  SKIA_TAG_SLUG: canvaskit-0.41.0
-  SKIA_BUILD_CACHE_EPOCH: v1
+  SKIA_REPO: https://skia.googlesource.com/skia.git
+  SKIA_REF: refs/heads/chrome/m150
+  SKIA_LABEL: chrome/m150
+  SKIA_REF_SLUG: chrome-m150
+  SKIA_SOURCE_CACHE_EPOCH: v1
+  SKIA_OUT_CACHE_EPOCH: v1
 
 jobs:
+  resolve-skia:
+    name: resolve skia
+    runs-on: ubuntu-24.04
+    outputs:
+      skia_commit: ${{ steps.resolve-skia.outputs.skia_commit }}
+    steps:
+      - name: Resolve Skia commit
+        id: resolve-skia
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git ls-remote "$SKIA_REPO" "$SKIA_REF" | awk '{print $1}')"
+          if [[ -z "$commit" ]]; then
+            echo "Could not resolve $SKIA_REF from $SKIA_REPO" >&2
+            exit 1
+          fi
+          echo "skia_commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "SKIA_COMMIT=$commit" >> "$GITHUB_ENV"
+
   build:
-    name: ${{ matrix.variant }}
-    runs-on: macos-14
+    name: build ${{ matrix.target }}
+    needs: resolve-skia
+    runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        variant:
-          - libgrapheme
-          - icu4x
+        include:
+          - target: macos-arm64
+            runs-on: macos-26
+            toolchain: macos26-default-xcode
+            artifact: skia-macos-arm64
+          - target: macos-x64
+            runs-on: macos-26-intel
+            toolchain: macos26-intel-default-xcode
+            artifact: skia-macos-x64
+          - target: ios-arm64
+            runs-on: macos-26
+            toolchain: macos26-ios-default-xcode
+            artifact: skia-ios-arm64
+          - target: ios-simulator-arm64
+            runs-on: macos-26
+            toolchain: macos26-ios-simulator-default-xcode
+            artifact: skia-ios-simulator-arm64
+          - target: android-arm64
+            runs-on: ubuntu-24.04
+            toolchain: android-ndk-r27c
+            artifact: skia-android-arm64
+          - target: windows-x64
+            runs-on: windows-2025
+            toolchain: windows2025-msvc
+            artifact: skia-windows-x64
+          - target: windows-arm64
+            runs-on: windows-11-arm
+            toolchain: windows11-arm-msvc
+            artifact: skia-windows-arm64
+    env:
+      SKIA_COMMIT: ${{ needs.resolve-skia.outputs.skia_commit }}
+      SKIA_PACKAGE_TARGET: ${{ matrix.target }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore Skia checkout and out cache
-        id: restore-skia-cache
+      - name: Restore Skia source cache
+        id: restore-source-cache
         uses: actions/cache/restore@v4
         with:
-          path: |
-            work-${{ matrix.variant }}/skia/.git
-            work-${{ matrix.variant }}/skia/buildtools
-            work-${{ matrix.variant }}/skia/third_party/externals
-            work-${{ matrix.variant }}/skia/third_party/ninja
-            work-${{ matrix.variant }}/skia/third_party/gn
-            work-${{ matrix.variant }}/skia/bin/gn
-            work-${{ matrix.variant }}/skia/bin/ninja.version
-            work-${{ matrix.variant }}/skia/out/${{ matrix.variant }}
-          key: skia-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_TAG_SLUG }}-${{ matrix.variant }}-${{ env.SKIA_BUILD_CACHE_EPOCH }}
-          restore-keys: |
-            skia-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_TAG_SLUG }}-${{ matrix.variant }}-
-            skia-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_TAG_SLUG }}-
+          path: work/skia-source
+          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
 
-      - name: Select Xcode 16
-        run: |
-          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
-          xcodebuild -version
-          clang++ --version
+      - name: Prepare Skia source
+        if: steps.restore-source-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash scripts/prepare_source.sh
 
-      - name: Build ${{ matrix.variant }}
-        run: bash scripts/build_variant.sh "${{ matrix.variant }}" build
-
-      - name: Save Skia checkout and out cache
-        if: steps.restore-skia-cache.outputs.cache-hit != 'true'
+      - name: Save Skia source cache
+        if: steps.restore-source-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
-          path: |
-            work-${{ matrix.variant }}/skia/.git
-            work-${{ matrix.variant }}/skia/buildtools
-            work-${{ matrix.variant }}/skia/third_party/externals
-            work-${{ matrix.variant }}/skia/third_party/ninja
-            work-${{ matrix.variant }}/skia/third_party/gn
-            work-${{ matrix.variant }}/skia/bin/gn
-            work-${{ matrix.variant }}/skia/bin/ninja.version
-            work-${{ matrix.variant }}/skia/out/${{ matrix.variant }}
-          key: skia-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_TAG_SLUG }}-${{ matrix.variant }}-${{ env.SKIA_BUILD_CACHE_EPOCH }}
+          path: work/skia-source
+          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
 
-      - name: Build size report
-        run: bash scripts/build_variant.sh "${{ matrix.variant }}" report
+      - name: Verify Skia source cache
+        shell: bash
+        run: |
+          test -f work/skia-source/BUILD.gn
 
-      - name: Upload report
+      - name: Show Xcode toolchain
+        if: startsWith(matrix.runs-on, 'macos-')
+        shell: bash
+        run: |
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          clang++ --version
+
+      - name: Setup Android SDK
+        if: matrix.target == 'android-arm64'
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        if: matrix.target == 'android-arm64'
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager --install "ndk;27.2.12479018"
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Setup MSVC
+        if: startsWith(matrix.target, 'windows-')
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.target == 'windows-arm64' && 'arm64' || 'x64' }}
+
+      - name: Restore Skia out cache
+        id: restore-out-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: work/skia-source/out/${{ matrix.target }}
+          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ hashFiles('scripts/build_package.sh') }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
+
+      - name: Build Skia
+        shell: bash
+        run: bash scripts/build_package.sh build
+
+      - name: Save Skia out cache
+        if: steps.restore-out-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: work/skia-source/out/${{ matrix.target }}
+          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ hashFiles('scripts/build_package.sh') }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
+
+      - name: Package Skia
+        shell: bash
+        run: bash scripts/build_package.sh package
+
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: report-${{ matrix.variant }}
-          path: reports/${{ matrix.variant }}
-
-      - name: Upload stripped static archives
-        uses: actions/upload-artifact@v4
-        with:
-          name: stripped-${{ matrix.variant }}
-          path: work-${{ matrix.variant }}/stripped-libs
+          name: ${{ matrix.artifact }}
+          path: work/package/${{ matrix.target }}
           compression-level: 0
           retention-days: 7
-
-  summarize:
-    name: summarize
-    runs-on: ubuntu-latest
-    needs: build
-    if: always()
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: report-*
-          path: reports
-
-      - name: Summarize sizes
-        run: |
-          python3 scripts/summarize.py
-          cat reports/summary.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload summary
-        uses: actions/upload-artifact@v4
-        with:
-          name: summary
-          path: reports/summary.md
