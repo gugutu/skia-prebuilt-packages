@@ -491,20 +491,8 @@ if [[ -d "$skia/modules" ]]; then
     fi
   done
 fi
-if [[ -d "$skia/third_party/externals/dawn/include" ]]; then
-  for dawn_include in "$skia"/third_party/externals/dawn/include/*; do
-    [[ -e "$dawn_include" ]] || continue
-    name="$(basename "$dawn_include")"
-    if [[ -d "$dawn_include" ]]; then
-      mkdir -p "$include_dir/skia/third_party/externals/dawn/include/$name"
-      cp -R "$dawn_include/." "$include_dir/skia/third_party/externals/dawn/include/$name/"
-    else
-      cp "$dawn_include" "$include_dir/skia/third_party/externals/dawn/include/$name"
-    fi
-  done
-fi
 
-"$python_cmd" - "$skia" "$include_dir/skia" <<'PY'
+"$python_cmd" - "$skia" "$include_dir/skia" "$skia/third_party/externals/dawn/include" <<'PY'
 from pathlib import Path
 import re
 import shutil
@@ -512,6 +500,7 @@ import sys
 
 skia = Path(sys.argv[1])
 sdk = Path(sys.argv[2])
+dawn_include = Path(sys.argv[3])
 include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
 queue = list(sdk.rglob("*.h"))
 seen = {path.resolve() for path in queue}
@@ -537,6 +526,13 @@ def checkout_header(current, include):
         (skia / current_relative_include, current_relative_include),
         (skia / include, path),
     ]
+    if dawn_include.is_dir():
+        dawn_relative_prefix = Path("third_party/externals/dawn/include")
+        candidates.extend([
+            (skia / current_relative_include, current_relative_include),
+            (dawn_include / current_relative_include, dawn_relative_prefix / current_relative_include),
+            (dawn_include / include, dawn_relative_prefix / path),
+        ])
     for candidate, destination_relative in candidates:
         if candidate.is_file():
             return candidate, destination_relative
