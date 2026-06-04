@@ -66,12 +66,14 @@ skia_use_runtime_icu=false
 skia_use_client_icu=false
 
 skia_use_harfbuzz=true
+skia_use_system_harfbuzz=false
 skia_enable_skshaper=true
 skia_enable_skparagraph=true
 
 skia_enable_svg=true
 skia_use_expat=true
-skia_enable_skottie=true
+skia_use_system_expat=false
+skia_enable_skottie=false
 
 skia_enable_pdf=false
 skia_enable_tools=false
@@ -83,12 +85,16 @@ skia_use_fontconfig=false
 
 skia_use_libpng_decode=true
 skia_use_libpng_encode=true
+skia_use_system_libpng=false
 skia_use_libjpeg_turbo_decode=true
 skia_use_libjpeg_turbo_encode=true
+skia_use_system_libjpeg_turbo=false
 skia_use_libwebp_decode=true
 skia_use_libwebp_encode=true
+skia_use_system_libwebp=false
 skia_use_wuffs=true
 skia_use_zlib=true
+skia_use_system_zlib=false
 ARGS
 )
 
@@ -108,8 +114,7 @@ third_party/ninja/ninja -C "$out_dir" \
   modules/skunicode:skunicode \
   modules/skshaper:skshaper \
   modules/skparagraph:skparagraph \
-  modules/svg:svg \
-  modules/skottie:skottie
+  modules/svg:svg
 echo "::endgroup::"
 
 echo "::group::collect static archives"
