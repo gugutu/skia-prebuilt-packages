@@ -1,0 +1,91 @@
+name: Build Skia macOS size compare
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+env:
+  SKIA_TAG: canvaskit/0.41.0
+  SKIA_TAG_SLUG: canvaskit-0.41.0
+
+jobs:
+  build:
+    name: ${{ matrix.variant }}
+    runs-on: macos-14
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - libgrapheme
+          - icu4x
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore Skia checkout and out cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            work-${{ matrix.variant }}/skia/.git
+            work-${{ matrix.variant }}/skia/buildtools
+            work-${{ matrix.variant }}/skia/third_party/externals
+            work-${{ matrix.variant }}/skia/third_party/ninja
+            work-${{ matrix.variant }}/skia/third_party/gn
+            work-${{ matrix.variant }}/skia/bin/gn
+            work-${{ matrix.variant }}/skia/bin/ninja.version
+            work-${{ matrix.variant }}/skia/out/${{ matrix.variant }}
+          key: skia-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_TAG_SLUG }}-${{ matrix.variant }}-${{ hashFiles('scripts/build_variant.sh') }}
+          restore-keys: |
+            skia-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_TAG_SLUG }}-${{ matrix.variant }}-
+            skia-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_TAG_SLUG }}-
+
+      - name: Enable sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.8.2
+
+      - name: Configure sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_CACHE_SIZE=8G" >> "$GITHUB_ENV"
+
+      - name: Build ${{ matrix.variant }}
+        run: bash scripts/build_variant.sh "${{ matrix.variant }}"
+
+      - name: Print sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.variant }}
+          path: reports/${{ matrix.variant }}
+
+  summarize:
+    name: summarize
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: report-*
+          path: reports
+
+      - name: Summarize sizes
+        run: |
+          python3 scripts/summarize.py
+          cat reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary
+          path: reports/summary.md
