@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 ARCHIVE_MAGIC = b"!<arch>\n"
+THIN_ARCHIVE_MAGIC = b"!<thin>\n"
 SYMBOL_TYPE_RE = re.compile(r"^[A-Za-z?]$")
 
 
@@ -54,20 +55,24 @@ def main() -> int:
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
 
-    root_objects = extract_archive_objects(root, work_dir / "root")
+    root_members = extract_archive_objects(root, work_dir / "root")
+    root_objects = read_object_symbols(symbol_tool, root_members)
     candidate_objects: list[ObjectSymbols] = []
     for archive in discover_archives(args.candidate_root, args.extension, root):
         extracted = extract_archive_objects(archive, work_dir / "candidates" / archive_digest(archive))
         candidate_objects.extend(read_object_symbols(symbol_tool, extracted))
 
     selected, unresolved = resolve_object_closure(
-        read_object_symbols(symbol_tool, root_objects),
+        root_objects,
         candidate_objects,
     )
     candidate_defined = set().union(*(item.defined for item in candidate_objects)) if candidate_objects else set()
     unresolved_from_candidates = unresolved & candidate_defined
-    if selected:
-        append_objects_to_archive(package_archive, [item.object_path for item in selected], args.extension)
+    write_package_archive(
+        package_archive,
+        [item.object_path for item in root_members] + [item.object_path for item in selected],
+        args.extension,
+    )
 
     args.manifest.write_text(
         json.dumps(
@@ -75,6 +80,7 @@ def main() -> int:
                 "root": str(root),
                 "package_archive": str(package_archive),
                 "candidate_root": str(args.candidate_root.resolve()),
+                "root_object_count": len(root_members),
                 "selected_object_count": len(selected),
                 "selected_archives": selected_archive_counts(selected),
                 "unresolved_symbol_count": len(unresolved),
@@ -137,7 +143,9 @@ def extract_archive_objects(archive: Path, destination: Path) -> list[ObjectSymb
     objects: list[ObjectSymbols] = []
     string_table = b""
     with archive.open("rb") as file:
-        if file.read(len(ARCHIVE_MAGIC)) != ARCHIVE_MAGIC:
+        magic = file.read(len(ARCHIVE_MAGIC))
+        is_thin = magic == THIN_ARCHIVE_MAGIC
+        if magic not in (ARCHIVE_MAGIC, THIN_ARCHIVE_MAGIC):
             raise SystemExit(f"not a static archive: {archive}")
 
         index = 0
@@ -156,18 +164,25 @@ def extract_archive_objects(archive: Path, destination: Path) -> list[ObjectSymb
             if size & 1:
                 file.read(1)
 
-            if raw_name == "/":
+            if raw_name in {"/", "/SYM64/"}:
                 continue
             if raw_name == "//":
                 string_table = body
                 continue
 
             member_name, object_bytes = decode_member(raw_name, body, string_table)
-            if not member_name or not object_bytes:
+            if not member_name or is_archive_metadata_member(member_name):
                 continue
 
-            object_path = destination / f"{index:06d}-{sanitize_member_name(member_name)}"
-            object_path.write_bytes(object_bytes)
+            if is_thin:
+                object_path = resolve_thin_member_path(archive, member_name)
+                if not object_path.is_file():
+                    raise SystemExit(f"thin archive member is missing: {archive}: {member_name}")
+            else:
+                if not object_bytes:
+                    continue
+                object_path = destination / f"{index:06d}-{sanitize_member_name(member_name)}"
+                object_path.write_bytes(object_bytes)
             objects.append(
                 ObjectSymbols(
                     archive=archive.resolve(),
@@ -180,6 +195,17 @@ def extract_archive_objects(archive: Path, destination: Path) -> list[ObjectSymb
             )
             index += 1
     return objects
+
+
+def is_archive_metadata_member(member_name: str) -> bool:
+    return member_name.startswith("__.SYMDEF")
+
+
+def resolve_thin_member_path(archive: Path, member_name: str) -> Path:
+    path = Path(member_name)
+    if path.is_absolute():
+        return path.resolve()
+    return (archive.parent / path).resolve()
 
 
 def decode_member(raw_name: str, body: bytes, string_table: bytes) -> tuple[str, bytes]:
@@ -333,30 +359,36 @@ def selected_archive_counts(selected: list[ObjectSymbols]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def append_objects_to_archive(package_archive: Path, objects: list[Path], extension: str) -> None:
+def write_package_archive(package_archive: Path, objects: list[Path], extension: str) -> None:
+    if not objects:
+        raise SystemExit("cannot write an empty static archive")
     if extension == "lib":
-        append_objects_with_lib_exe(package_archive, objects)
+        write_package_archive_with_lib_exe(package_archive, objects)
     else:
-        append_objects_with_ar(package_archive, objects)
+        write_package_archive_with_ar(package_archive, objects)
 
 
-def append_objects_with_ar(package_archive: Path, objects: list[Path]) -> None:
+def write_package_archive_with_ar(package_archive: Path, objects: list[Path]) -> None:
     ar = find_archiver()
-    for chunk in chunks(objects, 80):
-        subprocess.run([ar, "q", str(package_archive), *map(str, chunk)], check=True)
+    tmp = package_archive.with_suffix(package_archive.suffix + ".tmp")
+    tmp.unlink(missing_ok=True)
+    for index, chunk in enumerate(chunks(objects, 80)):
+        operation = "crs" if index == 0 else "rs"
+        subprocess.run([ar, operation, str(tmp), *map(str, chunk)], check=True)
     ranlib = find_ranlib()
     if ranlib:
-        subprocess.run([ranlib, str(package_archive)], check=True)
+        subprocess.run([ranlib, str(tmp)], check=True)
+    tmp.replace(package_archive)
 
 
-def append_objects_with_lib_exe(package_archive: Path, objects: list[Path]) -> None:
+def write_package_archive_with_lib_exe(package_archive: Path, objects: list[Path]) -> None:
     lib = shutil.which("lib") or shutil.which("lib.exe")
     if not lib:
         raise SystemExit("lib.exe is required to update Windows static libraries")
     rsp = package_archive.with_suffix(".objects.rsp")
     tmp = package_archive.with_suffix(".tmp.lib")
     rsp.write_text(
-        "\n".join([quote_for_response(package_archive), *map(quote_for_response, objects)]) + "\n",
+        "\n".join(map(quote_for_response, objects)) + "\n",
         encoding="utf-8",
     )
     subprocess.run([lib, "/NOLOGO", f"/OUT:{tmp}", f"@{rsp}"], check=True)

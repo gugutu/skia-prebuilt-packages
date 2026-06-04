@@ -138,6 +138,22 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Compute cache configuration hashes
+        id: cache-config
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_hash="$(git hash-object scripts/prepare_source.sh)"
+          out_hash="$(
+            git hash-object \
+              scripts/build_package.sh \
+              scripts/merge_static_object_closure.py \
+              scripts/package_headers.py |
+            git hash-object --stdin
+          )"
+          echo "source=$source_hash" >> "$GITHUB_OUTPUT"
+          echo "out=$out_hash" >> "$GITHUB_OUTPUT"
+
       - name: Enable Windows long paths
         if: startsWith(matrix.target, 'windows-')
         shell: bash
@@ -148,7 +164,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: work/skia-source
-          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
+          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.source }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
 
       - name: Prepare Skia source
         if: steps.restore-source-cache.outputs.cache-hit != 'true'
@@ -161,7 +177,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: work/skia-source
-          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
+          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.source }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
 
       - name: Verify Skia source cache
         shell: bash
@@ -233,7 +249,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: work/skia-source/out/${{ matrix.target }}
-          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
+          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.out }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
 
       - name: Build Skia
         shell: bash
@@ -244,7 +260,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: work/skia-source/out/${{ matrix.target }}
-          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
+          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.out }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
 
       - name: Package Skia
         shell: bash

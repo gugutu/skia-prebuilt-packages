@@ -549,6 +549,7 @@ if [[ "$mode" != "package" ]]; then
   echo "::endgroup::"
 
   echo "::group::ninja"
+  export NINJA_STATUS="${NINJA_STATUS:-[%r active %f/%t %es] }"
   "$ninja_bin" -C "$out_dir" ":$package_library_target"
   echo "::endgroup::"
 fi
@@ -560,23 +561,7 @@ fi
 rm -rf "$lib_dir" "$include_dir" "$generated_include_dir" "$license_dir"
 mkdir -p "$lib_dir" "$include_dir" "$generated_include_dir" "$license_dir"
 
-echo "::group::copy package static library"
-copied_library_names=()
-
-copy_package_library() {
-  local source="$1"
-  local destination="$2"
-  local basename
-  basename="$(basename "$destination")"
-  if [[ -f "$destination" ]]; then
-    return
-  fi
-  cp "$source" "$destination"
-  if [[ "$package_target" != windows-* ]]; then
-    "${RANLIB:-ranlib}" "$destination"
-  fi
-  copied_library_names+=("$basename")
-}
+echo "::group::package static library"
 
 package_lib_candidates=()
 while IFS= read -r lib; do
@@ -592,8 +577,6 @@ if [[ "${#package_lib_candidates[@]}" -ne 1 ]]; then
   exit 1
 fi
 
-copy_package_library "${package_lib_candidates[0]}" "$package_lib"
-
 object_closure_work="$package_dir/.object-closure-work"
 object_closure_manifest="$package_dir/object_closure_manifest.json"
 "$python_cmd" "$root/scripts/merge_static_object_closure.py" \
@@ -604,8 +587,8 @@ object_closure_manifest="$package_dir/object_closure_manifest.json"
   --work-dir "$object_closure_work" \
   --manifest "$object_closure_manifest"
 
-if [[ "${#copied_library_names[@]}" -lt 1 ]]; then
-  echo "no package libraries were copied" >&2
+if [[ ! -f "$package_lib" ]]; then
+  echo "package library was not generated: $package_lib" >&2
   exit 1
 fi
 echo "::endgroup::"
@@ -649,9 +632,7 @@ echo "::endgroup::"
   echo "skia_label=$skia_label"
   echo "skia_commit=$(git -C "$skia" rev-parse HEAD)"
   echo "target=$package_target"
-  for library in "${copied_library_names[@]}"; do
-    echo "library=lib/$library"
-  done
+  echo "library=lib/$(basename "$package_lib")"
   echo "include_path=include/skia"
   echo "include_path=generated-include/include"
 } > "$package_dir/manifest.txt"
@@ -748,7 +729,7 @@ echo "::group::write package metadata"
   "$skia_label" \
   "$package_tag" \
   "$(git -C "$skia" rev-parse HEAD)" \
-  "${copied_library_names[@]}" <<'PY'
+  "$(basename "$package_lib")" <<'PY'
 from pathlib import Path
 import json
 import sys
