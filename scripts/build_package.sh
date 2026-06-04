@@ -530,45 +530,22 @@ fi
 
 copy_package_library "${package_lib_candidates[0]}" "$package_lib"
 
-link_libs_file="$(mktemp)"
-"$gn_bin" desc "$out_dir" ":$package_library_target" libs --all > "$link_libs_file"
-while IFS= read -r linked_lib; do
+dependency_closure_file="$(mktemp)"
+"$python_cmd" "$root/scripts/resolve_static_lib_closure.py" \
+  --root "${package_lib_candidates[0]}" \
+  --candidate-root "$out_dir" \
+  --extension "$lib_ext" \
+  --root-package-name "$(basename "$package_lib")" \
+  --output "$dependency_closure_file"
+while IFS=$'\t' read -r linked_lib linked_name; do
   [[ -n "$linked_lib" ]] || continue
-  linked_name="$(basename "$linked_lib")"
+  [[ -n "$linked_name" ]] || linked_name="$(basename "$linked_lib")"
   if [[ "$linked_name" == "$(basename "$package_lib")" ]]; then
     continue
   fi
   copy_package_library "$linked_lib" "$lib_dir/$linked_name"
-done < <("$python_cmd" - "$out_dir" "$link_libs_file" <<'PY'
-from pathlib import Path
-import sys
-
-out_dir = Path(sys.argv[1])
-link_libs = Path(sys.argv[2])
-seen = set()
-
-def candidates(raw: str):
-    path = Path(raw)
-    if path.is_absolute():
-        yield path
-    else:
-        yield out_dir / path
-        yield Path.cwd() / path
-
-for line in link_libs.read_text(encoding="utf-8", errors="ignore").splitlines():
-    item = line.strip().strip('"')
-    if not item or not item.endswith((".a", ".lib")):
-        continue
-    for candidate in candidates(item):
-        if candidate.is_file():
-            resolved = str(candidate.resolve())
-            if resolved not in seen:
-                seen.add(resolved)
-                print(resolved)
-            break
-PY
-)
-rm -f "$link_libs_file"
+done < "$dependency_closure_file"
+rm -f "$dependency_closure_file"
 
 if [[ "${#copied_library_names[@]}" -lt 1 ]]; then
   echo "no package libraries were copied" >&2
