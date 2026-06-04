@@ -32,7 +32,7 @@ generated_include_dir="$package_dir/generated-include"
 license_dir="$package_dir/LICENSES"
 args_file="$package_dir/gn_args.txt"
 lib_ext="a"
-combined_lib="$lib_dir/lib_skia.a"
+package_lib="$lib_dir/lib_skia.a"
 package_library_target="skia_prebuilt_package"
 
 if [[ ! -f "$skia/BUILD.gn" ]]; then
@@ -309,7 +309,7 @@ ARGS
   windows-x64)
     export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
-    combined_lib="$lib_dir/skia.lib"
+    package_lib="$lib_dir/skia.lib"
     cat > "$target_args" <<'ARGS'
 target_os="win"
 target_cpu="x64"
@@ -327,7 +327,7 @@ ARGS
   windows-arm64)
     export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
-    combined_lib="$lib_dir/skia.lib"
+    package_lib="$lib_dir/skia.lib"
     cat > "$target_args" <<'ARGS'
 target_os="win"
 target_cpu="arm64"
@@ -470,20 +470,21 @@ PY
 
 cd "$skia"
 
+gn_bin="bin/gn"
+if [[ -x "bin/gn.exe" ]]; then
+  gn_bin="bin/gn.exe"
+fi
+ninja_bin="third_party/ninja/ninja"
+if [[ -x "third_party/ninja/ninja.exe" ]]; then
+  ninja_bin="third_party/ninja/ninja.exe"
+fi
+
 if [[ "$mode" != "package" ]]; then
   echo "::group::gn gen"
-  gn_bin="bin/gn"
-  if [[ -x "bin/gn.exe" ]]; then
-    gn_bin="bin/gn.exe"
-  fi
   "$gn_bin" gen "$out_dir" --args="$(tr '\n' ' ' < "$args_file")"
   echo "::endgroup::"
 
   echo "::group::ninja"
-  ninja_bin="third_party/ninja/ninja"
-  if [[ -x "third_party/ninja/ninja.exe" ]]; then
-    ninja_bin="third_party/ninja/ninja.exe"
-  fi
   "$ninja_bin" -C "$out_dir" ":$package_library_target"
   echo "::endgroup::"
 fi
@@ -496,6 +497,23 @@ rm -rf "$lib_dir" "$include_dir" "$generated_include_dir" "$license_dir"
 mkdir -p "$lib_dir" "$include_dir" "$generated_include_dir" "$license_dir"
 
 echo "::group::copy package static library"
+copied_library_names=()
+
+copy_package_library() {
+  local source="$1"
+  local destination="$2"
+  local basename
+  basename="$(basename "$destination")"
+  if [[ -f "$destination" ]]; then
+    return
+  fi
+  cp "$source" "$destination"
+  if [[ "$package_target" != windows-* ]]; then
+    ranlib "$destination"
+  fi
+  copied_library_names+=("$basename")
+}
+
 package_lib_candidates=()
 while IFS= read -r lib; do
   package_lib_candidates+=("$lib")
@@ -510,9 +528,51 @@ if [[ "${#package_lib_candidates[@]}" -ne 1 ]]; then
   exit 1
 fi
 
-cp "${package_lib_candidates[0]}" "$combined_lib"
-if [[ "$package_target" != windows-* ]]; then
-  ranlib "$combined_lib"
+copy_package_library "${package_lib_candidates[0]}" "$package_lib"
+
+link_libs_file="$(mktemp)"
+"$gn_bin" desc "$out_dir" ":$package_library_target" libs --all > "$link_libs_file"
+while IFS= read -r linked_lib; do
+  [[ -n "$linked_lib" ]] || continue
+  linked_name="$(basename "$linked_lib")"
+  if [[ "$linked_name" == "$(basename "$package_lib")" ]]; then
+    continue
+  fi
+  copy_package_library "$linked_lib" "$lib_dir/$linked_name"
+done < <("$python_cmd" - "$out_dir" "$link_libs_file" <<'PY'
+from pathlib import Path
+import sys
+
+out_dir = Path(sys.argv[1])
+link_libs = Path(sys.argv[2])
+seen = set()
+
+def candidates(raw: str):
+    path = Path(raw)
+    if path.is_absolute():
+        yield path
+    else:
+        yield out_dir / path
+        yield Path.cwd() / path
+
+for line in link_libs.read_text(encoding="utf-8", errors="ignore").splitlines():
+    item = line.strip().strip('"')
+    if not item or not item.endswith((".a", ".lib")):
+        continue
+    for candidate in candidates(item):
+        if candidate.is_file():
+            resolved = str(candidate.resolve())
+            if resolved not in seen:
+                seen.add(resolved)
+                print(resolved)
+            break
+PY
+)
+rm -f "$link_libs_file"
+
+if [[ "${#copied_library_names[@]}" -lt 1 ]]; then
+  echo "no package libraries were copied" >&2
+  exit 1
 fi
 echo "::endgroup::"
 
@@ -550,15 +610,17 @@ echo "::group::complete and verify package headers"
   --generated "$generated_include_dir/include"
 echo "::endgroup::"
 
-cat > "$package_dir/manifest.txt" <<EOF
-skia_ref=$skia_ref
-skia_label=$skia_label
-skia_commit=$(git -C "$skia" rev-parse HEAD)
-target=$package_target
-library=lib/$(basename "$combined_lib")
-include_path=include/skia
-include_path=generated-include/include
-EOF
+{
+  echo "skia_ref=$skia_ref"
+  echo "skia_label=$skia_label"
+  echo "skia_commit=$(git -C "$skia" rev-parse HEAD)"
+  echo "target=$package_target"
+  for library in "${copied_library_names[@]}"; do
+    echo "library=lib/$library"
+  done
+  echo "include_path=include/skia"
+  echo "include_path=generated-include/include"
+} > "$package_dir/manifest.txt"
 
 echo "::group::collect licenses"
 "$python_cmd" - "$skia" "$license_dir" <<'PY'
@@ -652,7 +714,7 @@ echo "::group::write package metadata"
   "$skia_label" \
   "$package_tag" \
   "$(git -C "$skia" rev-parse HEAD)" \
-  "$(basename "$combined_lib")" <<'PY'
+  "${copied_library_names[@]}" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -664,7 +726,7 @@ skia_ref = sys.argv[4]
 skia_label = sys.argv[5]
 package_tag = sys.argv[6]
 skia_commit = sys.argv[7]
-library = sys.argv[8]
+libraries = sys.argv[8:]
 
 gn_args = {}
 for line in args_file.read_text(encoding="utf-8").splitlines():
@@ -677,32 +739,32 @@ for line in args_file.read_text(encoding="utf-8").splitlines():
 target_link = {
     "macos-arm64": {
         "rust_target": "aarch64-apple-darwin",
-        "frameworks": ["AppKit", "CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "Metal", "QuartzCore"],
+        "frameworks": ["AppKit", "CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "IOSurface", "IOKit", "Metal", "QuartzCore"],
         "system_libs": ["c++"],
         "min_os": "macos11",
     },
     "macos-x64": {
         "rust_target": "x86_64-apple-darwin",
-        "frameworks": ["AppKit", "CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "Metal", "QuartzCore"],
+        "frameworks": ["AppKit", "CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "IOSurface", "IOKit", "Metal", "QuartzCore"],
         "system_libs": ["c++"],
         "min_os": "macos11",
     },
     "ios-arm64": {
         "rust_target": "aarch64-apple-ios",
-        "frameworks": ["CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "Metal", "QuartzCore", "UIKit"],
+        "frameworks": ["CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "IOSurface", "IOKit", "Metal", "QuartzCore", "UIKit"],
         "system_libs": ["c++"],
         "min_os": "ios15",
     },
     "ios-simulator-arm64": {
         "rust_target": "aarch64-apple-ios-sim",
-        "frameworks": ["CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "Metal", "QuartzCore", "UIKit"],
+        "frameworks": ["CoreFoundation", "CoreGraphics", "CoreText", "Foundation", "IOSurface", "IOKit", "Metal", "QuartzCore", "UIKit"],
         "system_libs": ["c++"],
         "min_os": "ios15",
     },
     "android-arm64": {
         "rust_target": "aarch64-linux-android",
         "frameworks": [],
-        "system_libs": ["android", "c++_static", "log"],
+        "system_libs": ["android", "c++_static", "log", "vulkan"],
         "min_os": "android29",
     },
     "windows-x64": {
@@ -730,7 +792,7 @@ metadata = {
     "package_tag": package_tag or None,
     "skia_commit": skia_commit,
     "library_kind": "static",
-    "libraries": [f"lib/{library}"],
+    "libraries": [f"lib/{library}" for library in libraries],
     "include_dirs": [
         "include/skia",
         "generated-include/include",
@@ -764,4 +826,4 @@ metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", 
 PY
 echo "::endgroup::"
 
-ls -lh "$combined_lib"
+ls -lh "$lib_dir"
