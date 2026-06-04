@@ -11,6 +11,12 @@ if ! command -v "$python_cmd" >/dev/null 2>&1; then
   python_cmd="python"
 fi
 
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    git config --global core.longpaths true
+    ;;
+esac
+
 echo "::group::checkout skia $skia_label"
 rm -rf "$skia"
 mkdir -p "$(dirname "$skia")"

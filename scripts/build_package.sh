@@ -35,6 +35,67 @@ if [[ ! -f "$skia/BUILD.gn" ]]; then
   exit 1
 fi
 
+patch_dawn_ios_cmake() {
+  local cmake_utils="$skia/third_party/dawn/cmake_utils.py"
+  local build_dawn="$skia/third_party/dawn/build_dawn.py"
+
+  if [[ -f "$cmake_utils" ]] && ! grep -q 'if os == "ios":' "$cmake_utils"; then
+    "$python_cmd" - "$cmake_utils" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = '''  if os == "mac":
+    target_cpu_map = {
+      "arm64": "arm64",
+      "x64": "x86_64",
+    }
+    return "Darwin", target_cpu_map[cpu]
+
+'''
+insert = needle + '''  if os == "ios":
+    target_cpu_map = {
+      "arm64": "arm64",
+      "x64": "x86_64",
+    }
+    return "iOS", target_cpu_map[cpu]
+
+'''
+if needle not in text:
+    raise SystemExit("could not find Dawn mac OS mapping")
+path.write_text(text.replace(needle, insert))
+PY
+  fi
+
+  if [[ -f "$build_dawn" ]] && ! grep -q 'SKIA_DAWN_IOS_SYSROOT' "$build_dawn"; then
+    "$python_cmd" - "$build_dawn" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = '''  if target_os == "Darwin" or target_os == "iOS":
+    configure_cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={target_cpu}")
+
+'''
+insert = '''  if target_os == "Darwin" or target_os == "iOS":
+    configure_cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={target_cpu}")
+
+  if target_os == "iOS":
+    ios_sysroot = os.environ.get("SKIA_DAWN_IOS_SYSROOT")
+    if ios_sysroot:
+      configure_cmd.append(f"-DCMAKE_OSX_SYSROOT={ios_sysroot}")
+    ios_deployment_target = os.environ.get("SKIA_DAWN_IOS_DEPLOYMENT_TARGET")
+    if ios_deployment_target:
+      configure_cmd.append(f"-DCMAKE_OSX_DEPLOYMENT_TARGET={ios_deployment_target}")
+
+'''
+if needle not in text:
+    raise SystemExit("could not find Dawn Apple CMake block")
+path.write_text(text.replace(needle, insert))
+PY
+  fi
+}
+
 mkdir -p "$package_dir"
 
 target_args="$(mktemp)"
@@ -64,6 +125,9 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   ios-arm64)
+    patch_dawn_ios_cmake
+    export SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+    export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="13.0"
     cat > "$target_args" <<'ARGS'
 target_os="ios"
 target_cpu="arm64"
@@ -77,6 +141,9 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   ios-simulator-arm64)
+    patch_dawn_ios_cmake
+    export SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+    export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="13.0"
     cat > "$target_args" <<'ARGS'
 target_os="ios"
 target_cpu="arm64"
@@ -262,7 +329,7 @@ if [[ "$package_target" == windows-* ]]; then
     out_arg="$(cygpath -w "$combined_lib")"
     rsp_arg="$(cygpath -w "$lib_rsp")"
   fi
-  lib.exe /nologo "/OUT:$out_arg" "@$rsp_arg"
+  MSYS2_ARG_CONV_EXCL="*" lib.exe /nologo "/OUT:$out_arg" "@$rsp_arg"
 else
   if [[ "$(uname -s)" == Darwin ]]; then
     libtool -static -o "$combined_lib" $(cat "$libs_file")
@@ -290,15 +357,70 @@ echo "::group::collect public headers"
 mkdir -p "$include_dir/skia/include"
 cp -R "$skia/include/." "$include_dir/skia/include/"
 mkdir -p "$include_dir/skia/modules" "$include_dir/skia/third_party/externals/dawn/include"
-for module in skparagraph skresources skshaper skunicode svg; do
+for module in skcms skparagraph skresources skshaper skunicode svg; do
   if [[ -d "$skia/modules/$module/include" ]]; then
     mkdir -p "$include_dir/skia/modules/$module/include"
     cp -R "$skia/modules/$module/include/." "$include_dir/skia/modules/$module/include/"
   fi
 done
 if [[ -d "$skia/third_party/externals/dawn/include" ]]; then
-  cp -R "$skia/third_party/externals/dawn/include/." "$include_dir/skia/third_party/externals/dawn/include/"
+  for dawn_include in dawn webgpu; do
+    if [[ -d "$skia/third_party/externals/dawn/include/$dawn_include" ]]; then
+      mkdir -p "$include_dir/skia/third_party/externals/dawn/include/$dawn_include"
+      cp -R "$skia/third_party/externals/dawn/include/$dawn_include/." \
+        "$include_dir/skia/third_party/externals/dawn/include/$dawn_include/"
+    fi
+  done
 fi
+
+"$python_cmd" - "$skia" "$include_dir/skia" <<'PY'
+from pathlib import Path
+import re
+import shutil
+import sys
+
+skia = Path(sys.argv[1])
+sdk = Path(sys.argv[2])
+include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
+queue = list(sdk.rglob("*.h"))
+seen = {path.resolve() for path in queue}
+
+def find_in_sdk(current: Path, include: str) -> Path | None:
+    candidates = []
+    if not include.startswith("/"):
+        candidates.append(current.parent / include)
+    candidates.append(sdk / include)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+while queue:
+    header = queue.pop()
+    try:
+        lines = header.read_text(errors="ignore").splitlines()
+    except OSError:
+        continue
+    for line in lines:
+        match = include_re.match(line)
+        if not match:
+            continue
+        include = match.group(1)
+        if find_in_sdk(header, include) is not None:
+            continue
+
+        # Some Skia public module headers include narrow private helpers by
+        # repository-root path, for example "src/base/SkUTF.h". Package the
+        # transitive closure of those helpers so consumers do not need a full
+        # Skia checkout in their include path.
+        if include.startswith("src/") and (skia / include).exists():
+            destination = sdk / include
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(skia / include, destination)
+            resolved = destination.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                queue.append(destination)
 echo "::endgroup::"
 
 echo "::group::generate dawn headers"
@@ -312,6 +434,55 @@ if [[ -f "$skia/third_party/externals/dawn/generator/dawn_json_generator.py" ]];
       --output-dir "$generated_include_dir"
   )
 fi
+echo "::endgroup::"
+
+echo "::group::verify header closure"
+"$python_cmd" - \
+  "$include_dir/skia" \
+  "$include_dir/skia/third_party/externals/dawn/include" \
+  "$generated_include_dir/include" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+roots = [Path(arg) for arg in sys.argv[1:] if Path(arg).exists()]
+include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
+optional_missing = {
+    "SkUserConfig.h",
+    "vulkan_sci.h",
+}
+missing = []
+
+def find_header(current: Path, include: str) -> bool:
+    candidates = []
+    if not include.startswith("/"):
+        candidates.append(current.parent / include)
+    candidates.extend(root / include for root in roots)
+    return any(candidate.exists() for candidate in candidates)
+
+for root in roots:
+    for header in root.rglob("*.h"):
+        try:
+            lines = header.read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            match = include_re.match(line)
+            if not match:
+                continue
+            include = match.group(1)
+            if include in optional_missing:
+                continue
+            if not find_header(header, include):
+                missing.append((header, include))
+
+if missing:
+    for header, include in missing[:80]:
+        print(f"{header}: missing quoted include {include}", file=sys.stderr)
+    if len(missing) > 80:
+        print(f"... and {len(missing) - 80} more", file=sys.stderr)
+    raise SystemExit(1)
+PY
 echo "::endgroup::"
 
 cat > "$package_dir/manifest.txt" <<EOF
