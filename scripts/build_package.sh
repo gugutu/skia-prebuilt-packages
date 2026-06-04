@@ -485,7 +485,7 @@ if [[ -d "$skia/modules" ]]; then
   for module_include in "$skia"/modules/*/include; do
     [[ -d "$module_include" ]] || continue
     module="$(basename "$(dirname "$module_include")")"
-    if [[ -f "$out_dir/lib$module.$lib_ext" || -f "$out_dir/$module.$lib_ext" ]]; then
+    if find "$out_dir" -maxdepth 1 \( -name "lib${module}*.$lib_ext" -o -name "${module}*.$lib_ext" \) -type f | grep -q .; then
       mkdir -p "$include_dir/skia/modules/$module/include"
       cp -R "$module_include/." "$include_dir/skia/modules/$module/include/"
     fi
