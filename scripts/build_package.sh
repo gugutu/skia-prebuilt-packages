@@ -35,7 +35,7 @@ if [[ ! -f "$skia/BUILD.gn" ]]; then
   exit 1
 fi
 
-patch_dawn_ios_cmake() {
+patch_dawn_cmake_helpers() {
   local cmake_utils="$skia/third_party/dawn/cmake_utils.py"
   local build_dawn="$skia/third_party/dawn/build_dawn.py"
 
@@ -67,6 +67,39 @@ path.write_text(text.replace(needle, insert))
 PY
   fi
 
+  if [[ -f "$cmake_utils" ]] && ! grep -q 'SKIA_DAWN_WINDOWS_HOST_TOOL_CPU' "$cmake_utils"; then
+    "$python_cmd" - "$cmake_utils" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = '''  # Explicitly tell CMake where to find the Resource Compiler, Manifest Tool, and Archiver.
+  rc_exe_path = os.path.join(args.win_sdk, "bin", args.win_sdk_version,
+                             args.target_cpu, "rc.exe")
+  win_cfgs.append(f"-DCMAKE_RC_COMPILER={rc_exe_path.replace(os.sep, '/')}")
+  mt_exe_path = os.path.join(args.win_sdk, "bin", args.win_sdk_version,
+                             args.target_cpu, "mt.exe")
+  win_cfgs.append(f"-DCMAKE_MT={mt_exe_path.replace(os.sep, '/')}")
+
+'''
+insert = '''  # Explicitly tell CMake where to find the Resource Compiler, Manifest Tool, and Archiver.
+  # rc.exe and mt.exe run on the host during configure/link steps, so ARM64
+  # cross-builds from x64 runners must keep using x64 host tools.
+  host_tool_cpu = os.environ.get("SKIA_DAWN_WINDOWS_HOST_TOOL_CPU", args.target_cpu)
+  rc_exe_path = os.path.join(args.win_sdk, "bin", args.win_sdk_version,
+                             host_tool_cpu, "rc.exe")
+  win_cfgs.append(f"-DCMAKE_RC_COMPILER={rc_exe_path.replace(os.sep, '/')}")
+  mt_exe_path = os.path.join(args.win_sdk, "bin", args.win_sdk_version,
+                             host_tool_cpu, "mt.exe")
+  win_cfgs.append(f"-DCMAKE_MT={mt_exe_path.replace(os.sep, '/')}")
+
+'''
+if needle not in text:
+    raise SystemExit("could not find Dawn Windows rc/mt block")
+path.write_text(text.replace(needle, insert))
+PY
+  fi
+
   if [[ -f "$build_dawn" ]] && ! grep -q 'SKIA_DAWN_IOS_SYSROOT' "$build_dawn"; then
     "$python_cmd" - "$build_dawn" <<'PY'
 from pathlib import Path
@@ -94,9 +127,27 @@ if needle not in text:
 path.write_text(text.replace(needle, insert))
 PY
   fi
+
+  if [[ -f "$build_dawn" ]] && ! grep -q 'TINT_BUILD_CMD_TOOLS=OFF' "$build_dawn"; then
+    "$python_cmd" - "$build_dawn" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = '''      "-DTINT_ENABLE_INSTALL=OFF",
+'''
+insert = '''      "-DTINT_ENABLE_INSTALL=OFF",
+      "-DTINT_BUILD_CMD_TOOLS=OFF",
+'''
+if needle not in text:
+    raise SystemExit("could not find Dawn Tint install option")
+path.write_text(text.replace(needle, insert))
+PY
+  fi
 }
 
 mkdir -p "$package_dir"
+patch_dawn_cmake_helpers
 
 target_args="$(mktemp)"
 case "$package_target" in
@@ -125,7 +176,6 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   ios-arm64)
-    patch_dawn_ios_cmake
     export SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
     export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="13.0"
     cat > "$target_args" <<'ARGS'
@@ -141,7 +191,6 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   ios-simulator-arm64)
-    patch_dawn_ios_cmake
     export SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
     export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="13.0"
     cat > "$target_args" <<'ARGS'
@@ -180,6 +229,7 @@ extra_cflags=["-mno-outline-atomics"]
 ARGS
     ;;
   windows-x64)
+    export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
     combined_lib="$lib_dir/skia.lib"
     cat > "$target_args" <<'ARGS'
@@ -197,6 +247,7 @@ dawn_enable_d3d12=true
 ARGS
     ;;
   windows-arm64)
+    export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
     combined_lib="$lib_dir/skia.lib"
     cat > "$target_args" <<'ARGS'

@@ -141,7 +141,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: work/skia-source/out/${{ matrix.target }}
-          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ hashFiles('scripts/build_package.sh') }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
+          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
 
       - name: Build Skia
         shell: bash
@@ -152,7 +152,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: work/skia-source/out/${{ matrix.target }}
-          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ hashFiles('scripts/build_package.sh') }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
+          key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
 
       - name: Package Skia
         shell: bash
