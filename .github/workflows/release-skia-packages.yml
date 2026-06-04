@@ -194,11 +194,39 @@ jobs:
           echo "ANDROID_HOME=$android_home" >> "$GITHUB_ENV"
           echo "ANDROID_NDK=$ANDROID_NDK_PATH" >> "$GITHUB_ENV"
 
-      - name: Setup MSVC
+      - name: Configure MSVC
         if: startsWith(matrix.target, 'windows-')
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.msvc_arch }}
+        shell: pwsh
+        env:
+          MSVC_ARCH: ${{ matrix.msvc_arch }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installPath) {
+            throw "Visual Studio with MSVC tools was not found"
+          }
+          $vsDevCmd = Join-Path $installPath "Common7\Tools\VsDevCmd.bat"
+          if (-not (Test-Path $vsDevCmd)) {
+            throw "VsDevCmd.bat was not found: $vsDevCmd"
+          }
+          $targetArch = if ($env:MSVC_ARCH -eq "x64_arm64") { "arm64" } else { $env:MSVC_ARCH }
+          $hostArch = "x64"
+          $lines = cmd.exe /s /c "`"$vsDevCmd`" -no_logo -arch=$targetArch -host_arch=$hostArch && set"
+          foreach ($line in $lines) {
+            if ($line -notmatch "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
+              continue
+            }
+            $name = $Matches[1]
+            $value = $Matches[2]
+            if ($name -match "^(GITHUB|RUNNER|ACTIONS)_") {
+              continue
+            }
+            $delimiter = "MSVC_ENV_$name"
+            Add-Content -Path $env:GITHUB_ENV -Value "$name<<$delimiter"
+            Add-Content -Path $env:GITHUB_ENV -Value $value
+            Add-Content -Path $env:GITHUB_ENV -Value $delimiter
+          }
 
       - name: Restore Skia out cache
         id: restore-out-cache
