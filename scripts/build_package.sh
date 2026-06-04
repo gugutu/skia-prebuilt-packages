@@ -28,7 +28,7 @@ generated_include_dir="$package_dir/generated-include"
 args_file="$package_dir/gn_args.txt"
 lib_ext="a"
 combined_lib="$lib_dir/lib_skia.a"
-package_library_target="ui_tree_skia_prebuilt"
+package_library_target="skia_prebuilt_package"
 
 if [[ ! -f "$skia/BUILD.gn" ]]; then
   echo "Skia source tree is missing at $skia" >&2
@@ -149,7 +149,8 @@ PY
 
 prepare_unified_static_package_target() {
   local build_config="$skia/gn/BUILDCONFIG.gn"
-  local package_gn_dir="$skia/ui_tree_package"
+  local root_build="$skia/BUILD.gn"
+  local package_gn_dir="$skia/skia_prebuilt_package_gen"
 
   "$python_cmd" - "$build_config" <<'PY'
 from pathlib import Path
@@ -174,13 +175,19 @@ elif replacement not in text:
     raise SystemExit("could not update component static-library defaults")
 PY
 
-  mkdir -p "$package_gn_dir"
-  cat > "$package_gn_dir/BUILD.gn" <<'GN'
-import("../gn/skia.gni")
+  "$python_cmd" - "$root_build" <<'PY'
+from pathlib import Path
+import sys
 
-static_library("ui_tree_skia_prebuilt") {
+path = Path(sys.argv[1])
+text = path.read_text()
+start = "# SKIA_PREBUILT_PACKAGE_BEGIN"
+end = "# SKIA_PREBUILT_PACKAGE_END"
+block = f'''
+{start}
+static_library("skia_prebuilt_package") {{
   complete_static_lib = true
-  sources = [ "empty.cpp" ]
+  sources = [ "skia_prebuilt_package_gen/empty.cpp" ]
   public_deps = [
     "//:skia",
     "//modules/skparagraph:skparagraph",
@@ -189,10 +196,16 @@ static_library("ui_tree_skia_prebuilt") {
     "//modules/skunicode",
     "//modules/svg:svg",
   ]
-}
-GN
+}}
+{end}
+'''
+if start not in text:
+    path.write_text(text.rstrip() + "\n" + block)
+PY
+
+  mkdir -p "$package_gn_dir"
   cat > "$package_gn_dir/empty.cpp" <<'CPP'
-namespace ui_tree_skia_prebuilt {
+namespace skia_prebuilt_package {
 void anchor() {}
 }
 CPP
@@ -466,7 +479,7 @@ if [[ "$mode" != "package" ]]; then
   if [[ -x "third_party/ninja/ninja.exe" ]]; then
     ninja_bin="third_party/ninja/ninja.exe"
   fi
-  "$ninja_bin" -C "$out_dir" "ui_tree_package:$package_library_target"
+  "$ninja_bin" -C "$out_dir" ":$package_library_target"
   echo "::endgroup::"
 fi
 
