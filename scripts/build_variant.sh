@@ -76,7 +76,6 @@ skia_enable_skottie=true
 skia_enable_pdf=false
 skia_enable_tools=false
 skia_enable_gpu_debug_layers=false
-cc_wrapper="sccache"
 
 skia_use_fonthost_mac=true
 skia_use_freetype=false
