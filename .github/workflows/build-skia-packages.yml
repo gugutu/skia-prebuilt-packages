@@ -2,9 +2,6 @@ name: Build Skia packages
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 env:
   SKIA_REPO: https://skia.googlesource.com/skia.git
