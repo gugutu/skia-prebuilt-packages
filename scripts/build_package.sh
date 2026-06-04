@@ -492,80 +492,6 @@ if [[ -d "$skia/modules" ]]; then
   done
 fi
 
-"$python_cmd" - "$skia" "$include_dir/skia" "$skia/third_party/externals/dawn/include" <<'PY'
-from pathlib import Path
-import re
-import shutil
-import sys
-
-skia = Path(sys.argv[1])
-sdk = Path(sys.argv[2])
-dawn_include = Path(sys.argv[3])
-include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
-queue = list(sdk.rglob("*.h"))
-seen = {path.resolve() for path in queue}
-
-def find_in_sdk(current, include):
-    candidates = []
-    if not include.startswith("/"):
-        candidates.append(current.parent / include)
-    candidates.append(sdk / include)
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
-
-def checkout_header(current, include):
-    path = Path(include)
-    if path.is_absolute() or ".." in path.parts:
-        return None
-
-    relative_current = current.relative_to(sdk)
-    current_relative_include = relative_current.parent / include
-    candidates = [
-        (skia / current_relative_include, current_relative_include),
-        (skia / include, path),
-    ]
-    if dawn_include.is_dir():
-        dawn_relative_prefix = Path("third_party/externals/dawn/include")
-        candidates.extend([
-            (skia / current_relative_include, current_relative_include),
-            (dawn_include / current_relative_include, dawn_relative_prefix / current_relative_include),
-            (dawn_include / include, dawn_relative_prefix / path),
-        ])
-    for candidate, destination_relative in candidates:
-        if candidate.is_file():
-            return candidate, destination_relative
-    return None
-
-while queue:
-    header = queue.pop()
-    try:
-        lines = header.read_text(errors="ignore").splitlines()
-    except OSError:
-        continue
-    for line in lines:
-        match = include_re.match(line)
-        if not match:
-            continue
-        include = match.group(1)
-        if find_in_sdk(header, include) is not None:
-            continue
-
-        # Follow Skia's quoted-include closure by repository-relative filename.
-        # This keeps the package self-contained without manually enumerating
-        # helper paths such as modules/skcms/skcms.h or src/base/SkUTF.h.
-        resolved = checkout_header(header, include)
-        if resolved is not None:
-            source, destination_relative = resolved
-            destination = sdk / destination_relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
-            destination_resolved = destination.resolve()
-            if destination_resolved not in seen:
-                seen.add(destination_resolved)
-                queue.append(destination)
-PY
 echo "::endgroup::"
 
 echo "::group::generate dawn headers"
@@ -579,6 +505,116 @@ if [[ -f "$skia/third_party/externals/dawn/generator/dawn_json_generator.py" ]];
       --output-dir "$generated_include_dir"
   )
 fi
+echo "::endgroup::"
+
+echo "::group::complete header closure"
+"$python_cmd" - \
+  "$skia" \
+  "$include_dir/skia" \
+  "$skia/third_party/externals/dawn/include" \
+  "$generated_include_dir/include" <<'PY'
+from pathlib import Path
+import re
+import shutil
+import sys
+
+skia = Path(sys.argv[1])
+sdk = Path(sys.argv[2])
+dawn_include = Path(sys.argv[3])
+generated = Path(sys.argv[4])
+dawn_sdk = sdk / "third_party/externals/dawn/include"
+include_re = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
+package_roots = [root for root in (sdk, dawn_sdk, generated) if root.exists()]
+queue = []
+for root in package_roots:
+    queue.extend(root.rglob("*.h"))
+seen = {path.resolve() for path in queue}
+
+def relative_to_or_none(path, root):
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return None
+
+def package_owner(current):
+    for root in package_roots:
+        relative = relative_to_or_none(current, root)
+        if relative is not None:
+            return root, relative
+    return None, None
+
+def find_in_package(current, include):
+    candidates = []
+    if not include.startswith("/"):
+        candidates.append(current.parent / include)
+    candidates.extend(root / include for root in package_roots)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+def checkout_header(current, include):
+    path = Path(include)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+
+    owner, current_relative = package_owner(current)
+    candidates = [
+        (skia / include, sdk / path),
+    ]
+    if owner is not None:
+        current_relative_include = current_relative.parent / include
+        if owner == dawn_sdk and dawn_include.is_dir():
+            candidates.append((
+                dawn_include / current_relative_include,
+                dawn_sdk / current_relative_include,
+            ))
+        elif owner == generated and dawn_include.is_dir():
+            candidates.append((
+                dawn_include / current_relative_include,
+                dawn_sdk / current_relative_include,
+            ))
+        else:
+            candidates.append((
+                skia / current_relative_include,
+                sdk / current_relative_include,
+            ))
+
+    if dawn_include.is_dir():
+        candidates.append((dawn_include / include, dawn_sdk / path))
+
+    for source, destination in candidates:
+        if source.is_file():
+            return source, destination
+    return None
+
+while queue:
+    header = queue.pop()
+    try:
+        lines = header.read_text(errors="ignore").splitlines()
+    except OSError:
+        continue
+    for line in lines:
+        match = include_re.match(line)
+        if not match:
+            continue
+        include = match.group(1)
+        if find_in_package(header, include) is not None:
+            continue
+
+        # Follow the quoted-include closure from the public package entries,
+        # including generated Dawn headers. This keeps the package
+        # self-contained without copying unrelated entry points such as Tint.
+        resolved = checkout_header(header, include)
+        if resolved is not None:
+            source, destination = resolved
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            destination_resolved = destination.resolve()
+            if destination_resolved not in seen:
+                seen.add(destination_resolved)
+                queue.append(destination)
+PY
 echo "::endgroup::"
 
 echo "::group::verify header closure"
