@@ -519,7 +519,7 @@ echo "::endgroup::"
 echo "::group::collect public headers"
 mkdir -p "$include_dir/skia/include"
 cp -R "$skia/include/." "$include_dir/skia/include/"
-mkdir -p "$include_dir/skia/modules" "$include_dir/skia/third_party/externals/dawn/include"
+mkdir -p "$include_dir/skia/modules"
 for module in skparagraph skresources skshaper skunicode svg; do
   module_include="$skia/modules/$module/include"
   [[ -d "$module_include" ]] || continue
@@ -546,7 +546,7 @@ echo "::group::complete and verify package headers"
 "$python_cmd" "$root/scripts/package_headers.py" \
   --skia "$skia" \
   --sdk "$include_dir/skia" \
-  --dawn-include "$skia/third_party/externals/dawn/include" \
+  --dawn-root "$skia/third_party/externals/dawn" \
   --generated "$generated_include_dir/include"
 echo "::endgroup::"
 
@@ -557,7 +557,6 @@ skia_commit=$(git -C "$skia" rev-parse HEAD)
 target=$package_target
 library=lib/$(basename "$combined_lib")
 include_path=include/skia
-include_path=include/skia/third_party/externals/dawn/include
 include_path=generated-include/include
 EOF
 
@@ -734,7 +733,6 @@ metadata = {
     "libraries": [f"lib/{library}"],
     "include_dirs": [
         "include/skia",
-        "include/skia/third_party/externals/dawn/include",
         "generated-include/include",
     ],
     "cxx_standard": "c++20",
