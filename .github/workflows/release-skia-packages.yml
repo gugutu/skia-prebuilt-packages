@@ -241,6 +241,18 @@ jobs:
             Add-Content -Path $env:GITHUB_ENV -Value $value
             Add-Content -Path $env:GITHUB_ENV -Value $delimiter
           }
+          $llvmBin = Join-Path $installPath "VC\Tools\Llvm\x64\bin"
+          $llvmAr = Join-Path $llvmBin "llvm-ar.exe"
+          $llvmNm = Join-Path $llvmBin "llvm-nm.exe"
+          $llvmRanlib = Join-Path $llvmBin "llvm-ranlib.exe"
+          foreach ($tool in @($llvmAr, $llvmNm, $llvmRanlib)) {
+            if (-not (Test-Path $tool)) {
+              throw "LLVM tool was not found: $tool"
+            }
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "AR=$llvmAr"
+          Add-Content -Path $env:GITHUB_ENV -Value "LLVM_NM=$llvmNm"
+          Add-Content -Path $env:GITHUB_ENV -Value "RANLIB=$llvmRanlib"
 
       - name: Restore Skia out cache
         id: restore-out-cache

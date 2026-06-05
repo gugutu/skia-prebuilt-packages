@@ -23,8 +23,6 @@ class Toolchain:
     ar: str
     ranlib: str | None
     nm: str
-    symbol_kind: str
-    lib: str | None
 
 
 @dataclass(frozen=True)
@@ -134,15 +132,10 @@ def find_toolchain(extension: str) -> Toolchain:
     ar = find_program_from_env("AR", ("llvm-ar", "ar"))
     ranlib = find_optional_program_from_env("RANLIB", ("llvm-ranlib", "ranlib"))
     nm = find_program_from_env("LLVM_NM", ("llvm-nm", "nm"))
-    lib = None
-    symbol_kind = "nm"
     if extension == "lib":
-        lib = find_msvc_tool(("MSVC_LIB_EXE", "LIB_EXE"), ("lib.exe", "lib"))
-        dumpbin = find_optional_msvc_tool(("MSVC_DUMPBIN_EXE", "DUMPBIN_EXE"), ("dumpbin.exe", "dumpbin"))
-        if dumpbin:
-            nm = dumpbin
-            symbol_kind = "dumpbin"
-    return Toolchain(ar=ar, ranlib=ranlib, nm=nm, symbol_kind=symbol_kind, lib=lib)
+        require_llvm_tool("AR", ar)
+        require_llvm_tool("LLVM_NM", nm)
+    return Toolchain(ar=ar, ranlib=ranlib, nm=nm)
 
 
 def find_program_from_env(env_name: str, candidates: tuple[str, ...]) -> str:
@@ -168,25 +161,10 @@ def find_optional_program_from_env(env_name: str, candidates: tuple[str, ...]) -
     return None
 
 
-def find_msvc_tool(env_names: tuple[str, ...], candidates: tuple[str, ...]) -> str:
-    found = find_optional_msvc_tool(env_names, candidates)
-    if found:
-        return found
-    joined_env = ", ".join(env_names)
-    joined_candidates = ", ".join(candidates)
-    raise SystemExit(f"{joined_env} or one of {joined_candidates} is required")
-
-
-def find_optional_msvc_tool(env_names: tuple[str, ...], candidates: tuple[str, ...]) -> str | None:
-    for env_name in env_names:
-        configured = os.environ.get(env_name)
-        if configured:
-            return shutil.which(configured) or configured
-    for candidate in candidates:
-        found = shutil.which(candidate)
-        if found:
-            return found
-    return None
+def require_llvm_tool(env_name: str, path: str) -> None:
+    name = Path(path).name.lower()
+    if not name.startswith("llvm-"):
+        raise SystemExit(f"{env_name} must point to an LLVM tool for Windows .lib packaging, got {path}")
 
 
 def normalize_archive(archive: Path, destination_dir: Path, target_arch: str) -> Path:
@@ -241,10 +219,7 @@ def extract_archive_objects(
     original_archive: Path | None = None,
 ) -> list[ObjectSymbols]:
     destination.mkdir(parents=True, exist_ok=True)
-    if extension == "lib":
-        object_paths = extract_lib_objects(toolchain, archive, destination)
-    else:
-        object_paths = extract_ar_objects(toolchain, archive, destination)
+    object_paths = extract_ar_objects(toolchain, archive, destination)
     symbols = read_object_symbols(toolchain, object_paths)
     archive_name = original_archive.resolve() if original_archive else archive.resolve()
     return [
@@ -272,50 +247,12 @@ def extract_ar_objects(toolchain: Toolchain, archive: Path, destination: Path) -
     return sorted(path for path in destination.rglob("*") if path.is_file() and is_object_member(path.name))
 
 
-def extract_lib_objects(toolchain: Toolchain, archive: Path, destination: Path) -> list[Path]:
-    if not toolchain.lib:
-        raise SystemExit("lib.exe is required for Windows static libraries")
-    output = subprocess.run(
-        [toolchain.lib, "/NOLOGO", "/LIST", str(archive)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="ignore",
-        check=True,
-    ).stdout
-    objects: list[Path] = []
-    for index, member in enumerate(line.strip() for line in output.splitlines()):
-        if not member or not is_object_member(member):
-            continue
-        destination_path = destination / f"{index:06d}-{sanitize_member_name(Path(member).name)}"
-        subprocess.run(
-            [
-                toolchain.lib,
-                "/NOLOGO",
-                f"/EXTRACT:{member}",
-                f"/OUT:{destination_path}",
-                str(archive),
-            ],
-            check=True,
-        )
-        if destination_path.is_file():
-            objects.append(destination_path)
-    return objects
-
-
 def is_object_member(name: str) -> bool:
     lower = name.lower()
     return lower.endswith((".o", ".obj"))
 
 
-def sanitize_member_name(name: str) -> str:
-    sanitized = re.sub(r"[^A-Za-z0-9_.+-]+", "_", name).strip("._")
-    return (sanitized or "object.o")[:120]
-
-
 def read_object_symbols(toolchain: Toolchain, objects: list[Path]) -> list[tuple[Path, set[str], set[str]]]:
-    if toolchain.symbol_kind == "dumpbin":
-        return [(path, *read_symbols_with_dumpbin(toolchain.nm, path)) for path in objects]
     return read_object_symbols_with_nm(toolchain.nm, objects)
 
 
@@ -358,39 +295,6 @@ def parse_nm_line(line: str) -> tuple[Path, str, str] | None:
     if SYMBOL_TYPE_RE.match(parts[0]):
         return Path(path_text), parts[0], parts[-1]
     return None
-
-
-def read_symbols_with_dumpbin(dumpbin: str, object_path: Path) -> tuple[set[str], set[str]]:
-    output = subprocess.run(
-        [dumpbin, "/symbols", str(object_path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        errors="ignore",
-        check=False,
-    ).stdout
-    defined: set[str] = set()
-    undefined: set[str] = set()
-    for line in output.splitlines():
-        parsed = parse_dumpbin_line(line)
-        if parsed is None:
-            continue
-        is_undefined, symbol = parsed
-        if is_undefined:
-            undefined.add(symbol)
-        else:
-            defined.add(symbol)
-    return defined, undefined
-
-
-def parse_dumpbin_line(line: str) -> tuple[bool, str] | None:
-    if "|" not in line or "External" not in line:
-        return None
-    left, symbol = line.rsplit("|", 1)
-    symbol = symbol.strip()
-    if not symbol:
-        return None
-    return " UNDEF " in f" {left} ", symbol
 
 
 def resolve_object_closure(
@@ -451,10 +355,7 @@ def write_package_archive(
     if not objects:
         raise SystemExit("cannot write an empty static archive")
     package_archive.parent.mkdir(parents=True, exist_ok=True)
-    if extension == "lib":
-        write_package_archive_with_lib_exe(toolchain, package_archive, objects)
-    else:
-        write_package_archive_with_ar(toolchain, package_archive, objects)
+    write_package_archive_with_ar(toolchain, package_archive, objects)
 
 
 def write_package_archive_with_ar(toolchain: Toolchain, package_archive: Path, objects: list[Path]) -> None:
@@ -466,17 +367,6 @@ def write_package_archive_with_ar(toolchain: Toolchain, package_archive: Path, o
     if toolchain.ranlib:
         subprocess.run([toolchain.ranlib, str(tmp)], check=True)
     tmp.replace(package_archive)
-
-
-def write_package_archive_with_lib_exe(toolchain: Toolchain, package_archive: Path, objects: list[Path]) -> None:
-    if not toolchain.lib:
-        raise SystemExit("lib.exe is required for Windows static libraries")
-    rsp = package_archive.with_suffix(".objects.rsp")
-    tmp = package_archive.with_suffix(".tmp.lib")
-    rsp.write_text("\n".join(f'"{path}"' for path in objects) + "\n", encoding="utf-8")
-    subprocess.run([toolchain.lib, "/NOLOGO", f"/OUT:{tmp}", f"@{rsp}"], check=True)
-    tmp.replace(package_archive)
-    rsp.unlink(missing_ok=True)
 
 
 def chunks(items: list, size: int) -> list[list]:
