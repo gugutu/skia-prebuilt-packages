@@ -91,9 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source_hash="$(git hash-object scripts/prepare_source.sh)"
           out_hash="$(python3 scripts/skia_out_cache_key.py "$SKIA_PACKAGE_TARGET")"
-          echo "source=$source_hash" >> "$GITHUB_OUTPUT"
           echo "out=$out_hash" >> "$GITHUB_OUTPUT"
 
       - name: Enable Windows long paths
@@ -106,7 +104,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: work/skia-source
-          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.source }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
+          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
           restore-keys: |
             skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-
 
@@ -121,7 +119,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: work/skia-source
-          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.source }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
+          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
 
       - name: Verify Skia source cache
         shell: bash

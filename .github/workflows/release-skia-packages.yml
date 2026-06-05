@@ -7,16 +7,13 @@ on:
         description: "Immutable package tag, for example skia-chrome-m150-r0"
         required: true
         type: string
-  push:
-    tags:
-      - "skia-chrome-m*-r*"
 
 permissions:
   actions: read
   contents: write
 
 concurrency:
-  group: release-${{ inputs.package_tag || github.ref_name }}
+  group: release-${{ inputs.package_tag }}
   cancel-in-progress: false
 
 env:
@@ -46,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           release_exists=false
-          package_tag="${{ inputs.package_tag || github.ref_name }}"
+          package_tag="${{ inputs.package_tag }}"
           if [[ -z "$package_tag" ]]; then
             echo "Missing package tag" >&2
             exit 1
@@ -150,9 +147,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source_hash="$(git hash-object scripts/prepare_source.sh)"
           out_hash="$(python3 scripts/skia_out_cache_key.py "$SKIA_PACKAGE_TARGET")"
-          echo "source=$source_hash" >> "$GITHUB_OUTPUT"
           echo "out=$out_hash" >> "$GITHUB_OUTPUT"
 
       - name: Enable Windows long paths
@@ -165,7 +160,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: work/skia-source
-          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.source }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
+          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
           restore-keys: |
             skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-
 
@@ -180,7 +175,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: work/skia-source
-          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.source }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
+          key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
 
       - name: Verify Skia source cache
         shell: bash
