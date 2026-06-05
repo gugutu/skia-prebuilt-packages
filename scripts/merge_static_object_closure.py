@@ -135,8 +135,8 @@ def find_toolchain(extension: str) -> Toolchain:
     lib = None
     symbol_kind = "nm"
     if extension == "lib":
-        lib = find_program_from_env("LIB", ("lib", "lib.exe"))
-        dumpbin = find_optional_program_from_env("DUMPBIN", ("dumpbin", "dumpbin.exe"))
+        lib = find_msvc_tool(("MSVC_LIB_EXE", "LIB_EXE"), ("lib.exe", "lib"))
+        dumpbin = find_optional_msvc_tool(("MSVC_DUMPBIN_EXE", "DUMPBIN_EXE"), ("dumpbin.exe", "dumpbin"))
         if dumpbin:
             nm = dumpbin
             symbol_kind = "dumpbin"
@@ -159,6 +159,27 @@ def find_optional_program_from_env(env_name: str, candidates: tuple[str, ...]) -
     configured = os.environ.get(env_name)
     if configured:
         return shutil.which(configured) or configured
+    for candidate in candidates:
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return None
+
+
+def find_msvc_tool(env_names: tuple[str, ...], candidates: tuple[str, ...]) -> str:
+    found = find_optional_msvc_tool(env_names, candidates)
+    if found:
+        return found
+    joined_env = ", ".join(env_names)
+    joined_candidates = ", ".join(candidates)
+    raise SystemExit(f"{joined_env} or one of {joined_candidates} is required")
+
+
+def find_optional_msvc_tool(env_names: tuple[str, ...], candidates: tuple[str, ...]) -> str | None:
+    for env_name in env_names:
+        configured = os.environ.get(env_name)
+        if configured:
+            return shutil.which(configured) or configured
     for candidate in candidates:
         found = shutil.which(candidate)
         if found:
