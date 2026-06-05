@@ -46,32 +46,39 @@ jobs:
             runs-on: macos-26
             toolchain: macos26-default-xcode
             artifact: skia-macos-arm64
+            source_cache_writer: true
           - target: macos-x64
             runs-on: macos-26
             toolchain: macos26-arm64-x64-cross-xcode
             artifact: skia-macos-x64
+            source_cache_writer: false
           - target: ios-arm64
             runs-on: macos-26
             toolchain: macos26-ios-default-xcode
             artifact: skia-ios-arm64
+            source_cache_writer: false
           - target: ios-simulator-arm64
             runs-on: macos-26
             toolchain: macos26-ios-simulator-default-xcode
             artifact: skia-ios-simulator-arm64
+            source_cache_writer: false
           - target: android-arm64
             runs-on: ubuntu-24.04
             toolchain: android-ndk-r27d
             artifact: skia-android-arm64
+            source_cache_writer: true
           - target: windows-x64
             runs-on: windows-2025-vs2026
             toolchain: windows2025-vs2026-msvc
             artifact: skia-windows-x64
             msvc_arch: x64
+            source_cache_writer: true
           - target: windows-arm64
             runs-on: windows-2025-vs2026
             toolchain: windows2025-vs2026-msvc-arm64-cross
             artifact: skia-windows-arm64
             msvc_arch: x64_arm64
+            source_cache_writer: false
     env:
       SKIA_COMMIT: ${{ needs.resolve-skia.outputs.skia_commit }}
       SKIA_PACKAGE_TARGET: ${{ matrix.target }}
@@ -113,7 +120,7 @@ jobs:
         run: bash scripts/prepare_source.sh
 
       - name: Save Skia source cache
-        if: steps.restore-source-cache.outputs.cache-hit != 'true'
+        if: steps.restore-source-cache.outputs.cache-hit != 'true' && matrix.source_cache_writer
         continue-on-error: true
         uses: actions/cache/save@v5
         with:

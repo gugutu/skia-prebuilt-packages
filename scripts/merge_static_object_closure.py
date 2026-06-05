@@ -7,26 +7,30 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 
 ARCHIVE_MAGIC = b"!<arch>\n"
 THIN_ARCHIVE_MAGIC = b"!<thin>\n"
+MACHO_FAT_MAGICS = {b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca", b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca"}
 SYMBOL_TYPE_RE = re.compile(r"^[A-Za-z?]$")
 
 
 @dataclass(frozen=True)
-class SymbolTool:
-    path: str
-    kind: str
+class Toolchain:
+    ar: str
+    ranlib: str | None
+    nm: str
+    symbol_kind: str
+    lib: str | None
 
 
 @dataclass(frozen=True)
 class ObjectSymbols:
     archive: Path
     member_name: str
-    index: int
     object_path: Path
     defined: frozenset[str]
     undefined: frozenset[str]
@@ -34,59 +38,73 @@ class ObjectSymbols:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description=(
-            "Append only the static object members needed to close a root archive's "
-            "symbol dependencies."
-        )
+        description="Create a compact static archive by selecting the object dependency closure."
     )
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--package-archive", required=True, type=Path)
     parser.add_argument("--candidate-root", required=True, type=Path)
     parser.add_argument("--extension", required=True, choices=("a", "lib"))
+    parser.add_argument("--target-arch", required=True)
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
     args = parser.parse_args()
 
-    symbol_tool = find_symbol_tool()
-    root = args.root.resolve()
-    package_archive = args.package_archive.resolve()
+    start = time.monotonic()
+    toolchain = find_toolchain(args.extension)
     work_dir = args.work_dir.resolve()
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
 
-    root_members = extract_archive_objects(root, work_dir / "root")
-    root_objects = read_object_symbols(symbol_tool, root_members)
-    candidate_objects: list[ObjectSymbols] = []
-    for archive in discover_archives(args.candidate_root, args.extension, root):
-        extracted = extract_archive_objects(archive, work_dir / "candidates" / archive_digest(archive))
-        candidate_objects.extend(read_object_symbols(symbol_tool, extracted))
-
-    selected, unresolved = resolve_object_closure(
-        root_objects,
-        candidate_objects,
+    root = normalize_archive(args.root.resolve(), work_dir / "normalized" / "root", args.target_arch)
+    root_objects = extract_archive_objects(
+        toolchain,
+        root,
+        work_dir / "objects" / "root",
+        args.extension,
     )
+    candidate_objects: list[ObjectSymbols] = []
+    for archive in discover_archives(args.candidate_root, args.extension, args.root.resolve()):
+        normalized = normalize_archive(
+            archive,
+            work_dir / "normalized" / archive_digest(archive),
+            args.target_arch,
+        )
+        extracted = extract_archive_objects(
+            toolchain,
+            normalized,
+            work_dir / "objects" / "candidates" / archive_digest(archive),
+            args.extension,
+            original_archive=archive,
+        )
+        candidate_objects.extend(extracted)
+
+    selected, unresolved = resolve_object_closure(root_objects, candidate_objects)
     candidate_defined = set().union(*(item.defined for item in candidate_objects)) if candidate_objects else set()
-    unresolved_from_candidates = unresolved & candidate_defined
+    reducer_missed = unresolved & candidate_defined
     write_package_archive(
-        package_archive,
-        [item.object_path for item in root_members] + [item.object_path for item in selected],
+        toolchain,
+        args.package_archive.resolve(),
+        [item.object_path for item in root_objects] + [item.object_path for item in selected],
         args.extension,
     )
 
+    elapsed_ms = (time.monotonic() - start) * 1000.0
     args.manifest.write_text(
         json.dumps(
             {
-                "root": str(root),
-                "package_archive": str(package_archive),
+                "root": str(args.root.resolve()),
+                "package_archive": str(args.package_archive.resolve()),
                 "candidate_root": str(args.candidate_root.resolve()),
-                "root_object_count": len(root_members),
+                "root_object_count": len(root_objects),
+                "candidate_object_count": len(candidate_objects),
                 "selected_object_count": len(selected),
                 "selected_archives": selected_archive_counts(selected),
                 "unresolved_symbol_count": len(unresolved),
                 "unresolved_symbols_sample": sorted(unresolved)[:80],
-                "unresolved_from_candidate_archive_count": len(unresolved_from_candidates),
-                "unresolved_from_candidate_archive_sample": sorted(unresolved_from_candidates)[:80],
+                "reducer_missed_candidate_symbol_count": len(reducer_missed),
+                "reducer_missed_candidate_symbols_sample": sorted(reducer_missed)[:80],
+                "elapsed_ms": round(elapsed_ms, 3),
             },
             indent=2,
             sort_keys=True,
@@ -94,29 +112,83 @@ def main() -> int:
         + "\n",
         encoding="utf-8",
     )
+
+    print(
+        "object closure: "
+        f"root={len(root_objects)} candidates={len(candidate_objects)} "
+        f"selected={len(selected)} unresolved={len(unresolved)} "
+        f"elapsed_ms={elapsed_ms:.1f}"
+    )
     shutil.rmtree(work_dir)
-    if unresolved_from_candidates:
+    if reducer_missed:
         raise SystemExit(
-            "static object closure missed symbols that are defined by candidate archives; "
+            "object closure reducer left symbols unresolved even though candidate archives define them; "
             f"see {args.manifest}"
         )
     return 0
 
 
-def find_symbol_tool() -> SymbolTool:
-    for name in ("LLVM_NM", "NM"):
-        configured = os.environ.get(name)
-        if configured:
-            return SymbolTool(shutil.which(configured) or configured, "nm")
-    for candidate in ("llvm-nm", "llvm-nm.exe", "nm", "nm.exe"):
+def find_toolchain(extension: str) -> Toolchain:
+    ar = find_program_from_env("AR", ("llvm-ar", "ar"))
+    ranlib = find_optional_program_from_env("RANLIB", ("llvm-ranlib", "ranlib"))
+    nm = find_program_from_env("LLVM_NM", ("llvm-nm", "nm"))
+    lib = None
+    symbol_kind = "nm"
+    if extension == "lib":
+        lib = find_program_from_env("LIB", ("lib", "lib.exe"))
+        dumpbin = find_optional_program_from_env("DUMPBIN", ("dumpbin", "dumpbin.exe"))
+        if dumpbin:
+            nm = dumpbin
+            symbol_kind = "dumpbin"
+    return Toolchain(ar=ar, ranlib=ranlib, nm=nm, symbol_kind=symbol_kind, lib=lib)
+
+
+def find_program_from_env(env_name: str, candidates: tuple[str, ...]) -> str:
+    configured = os.environ.get(env_name)
+    if configured:
+        return shutil.which(configured) or configured
+    for candidate in candidates:
         found = shutil.which(candidate)
         if found:
-            return SymbolTool(found, "nm")
-    for candidate in ("dumpbin", "dumpbin.exe"):
+            return found
+    joined = ", ".join(candidates)
+    raise SystemExit(f"{env_name} or one of {joined} is required")
+
+
+def find_optional_program_from_env(env_name: str, candidates: tuple[str, ...]) -> str | None:
+    configured = os.environ.get(env_name)
+    if configured:
+        return shutil.which(configured) or configured
+    for candidate in candidates:
         found = shutil.which(candidate)
         if found:
-            return SymbolTool(found, "dumpbin")
-    raise SystemExit("llvm-nm, nm, or dumpbin is required")
+            return found
+    return None
+
+
+def normalize_archive(archive: Path, destination_dir: Path, target_arch: str) -> Path:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    with archive.open("rb") as file:
+        magic = file.read(8)
+    if magic in (ARCHIVE_MAGIC, THIN_ARCHIVE_MAGIC):
+        return archive
+    if magic[:4] in MACHO_FAT_MAGICS:
+        lipo = shutil.which("lipo")
+        if not lipo:
+            raise SystemExit(f"{archive} is a fat archive, but lipo is not available")
+        output = destination_dir / archive.name
+        subprocess.run(
+            [lipo, str(archive), "-thin", target_arch, "-output", str(output)],
+            check=True,
+        )
+        normalized_magic = output.read_bytes()[:8]
+        if normalized_magic not in (ARCHIVE_MAGIC, THIN_ARCHIVE_MAGIC):
+            raise SystemExit(
+                f"lipo did not produce a static archive for {archive}; "
+                f"magic={normalized_magic.hex()}"
+            )
+        return output
+    raise SystemExit(f"not a static archive: {archive}; magic={magic.hex()}")
 
 
 def discover_archives(candidate_root: Path, extension: str, root: Path) -> list[Path]:
@@ -138,139 +210,131 @@ def archive_digest(path: Path) -> str:
     return hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:16]
 
 
-def extract_archive_objects(archive: Path, destination: Path) -> list[ObjectSymbols]:
+def extract_archive_objects(
+    toolchain: Toolchain,
+    archive: Path,
+    destination: Path,
+    extension: str,
+    original_archive: Path | None = None,
+) -> list[ObjectSymbols]:
     destination.mkdir(parents=True, exist_ok=True)
-    objects: list[ObjectSymbols] = []
-    string_table = b""
-    with archive.open("rb") as file:
-        magic = file.read(len(ARCHIVE_MAGIC))
-        is_thin = magic == THIN_ARCHIVE_MAGIC
-        if magic not in (ARCHIVE_MAGIC, THIN_ARCHIVE_MAGIC):
-            raise SystemExit(f"not a static archive: {archive}")
+    if extension == "lib":
+        object_paths = extract_lib_objects(toolchain, archive, destination)
+    else:
+        object_paths = extract_ar_objects(toolchain, archive, destination)
+    symbols = read_object_symbols(toolchain, object_paths)
+    archive_name = original_archive.resolve() if original_archive else archive.resolve()
+    return [
+        ObjectSymbols(
+            archive=archive_name,
+            member_name=path.name,
+            object_path=path,
+            defined=frozenset(defined),
+            undefined=frozenset(undefined),
+        )
+        for path, defined, undefined in symbols
+    ]
 
-        index = 0
-        while True:
-            header = file.read(60)
-            if not header:
-                break
-            if len(header) != 60 or header[58:60] != b"`\n":
-                raise SystemExit(f"invalid archive member header in {archive}")
-            raw_name = header[:16].decode("utf-8", "replace").strip()
-            try:
-                size = int(header[48:58].decode("ascii").strip() or "0")
-            except ValueError as error:
-                raise SystemExit(f"invalid archive member size in {archive}: {error}") from error
-            body = file.read(size)
-            if size & 1:
-                file.read(1)
 
-            if raw_name in {"/", "/SYM64/"}:
-                continue
-            if raw_name == "//":
-                string_table = body
-                continue
+def extract_ar_objects(toolchain: Toolchain, archive: Path, destination: Path) -> list[Path]:
+    subprocess.run(
+        [toolchain.ar, "t", str(archive)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="ignore",
+        check=True,
+    )
+    subprocess.run([toolchain.ar, "x", str(archive)], cwd=destination, check=True)
+    return sorted(path for path in destination.rglob("*") if path.is_file() and is_object_member(path.name))
 
-            member_name, object_bytes = decode_member(raw_name, body, string_table)
-            if not member_name or is_archive_metadata_member(member_name):
-                continue
 
-            if is_thin:
-                object_path = resolve_thin_member_path(archive, member_name)
-                if not object_path.is_file():
-                    raise SystemExit(f"thin archive member is missing: {archive}: {member_name}")
-            else:
-                if not object_bytes:
-                    continue
-                object_path = destination / f"{index:06d}-{sanitize_member_name(member_name)}"
-                object_path.write_bytes(object_bytes)
-            objects.append(
-                ObjectSymbols(
-                    archive=archive.resolve(),
-                    member_name=member_name,
-                    index=index,
-                    object_path=object_path,
-                    defined=frozenset(),
-                    undefined=frozenset(),
-                )
-            )
-            index += 1
+def extract_lib_objects(toolchain: Toolchain, archive: Path, destination: Path) -> list[Path]:
+    if not toolchain.lib:
+        raise SystemExit("lib.exe is required for Windows static libraries")
+    output = subprocess.run(
+        [toolchain.lib, "/NOLOGO", f"/LIST:{archive}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="ignore",
+        check=True,
+    ).stdout
+    objects: list[Path] = []
+    for index, member in enumerate(line.strip() for line in output.splitlines()):
+        if not member or not is_object_member(member):
+            continue
+        destination_path = destination / f"{index:06d}-{sanitize_member_name(Path(member).name)}"
+        subprocess.run(
+            [
+                toolchain.lib,
+                "/NOLOGO",
+                f"/EXTRACT:{member}",
+                f"/OUT:{destination_path}",
+                str(archive),
+            ],
+            check=True,
+        )
+        if destination_path.is_file():
+            objects.append(destination_path)
     return objects
 
 
-def is_archive_metadata_member(member_name: str) -> bool:
-    return member_name.startswith("__.SYMDEF")
-
-
-def resolve_thin_member_path(archive: Path, member_name: str) -> Path:
-    path = Path(member_name)
-    if path.is_absolute():
-        return path.resolve()
-    return (archive.parent / path).resolve()
-
-
-def decode_member(raw_name: str, body: bytes, string_table: bytes) -> tuple[str, bytes]:
-    if raw_name.startswith("#1/"):
-        name_len = int(raw_name[3:])
-        return body[:name_len].decode("utf-8", "replace"), body[name_len:]
-    if raw_name.startswith("/") and raw_name[1:].split()[0].isdigit() and string_table:
-        offset = int(raw_name[1:].split()[0])
-        end = string_table.find(b"\n", offset)
-        if end < 0:
-            end = len(string_table)
-        return string_table[offset:end].decode("utf-8", "replace").rstrip("/\x00"), body
-    return raw_name.rstrip("/").strip(), body
+def is_object_member(name: str) -> bool:
+    lower = name.lower()
+    return lower.endswith((".o", ".obj"))
 
 
 def sanitize_member_name(name: str) -> str:
     sanitized = re.sub(r"[^A-Za-z0-9_.+-]+", "_", name).strip("._")
-    if not sanitized:
-        sanitized = "object.o"
-    return sanitized[:120]
+    return (sanitized or "object.o")[:120]
 
 
-def read_object_symbols(tool: SymbolTool, objects: list[ObjectSymbols]) -> list[ObjectSymbols]:
-    return [replace_symbols(item, read_symbols(tool, item.object_path)) for item in objects]
+def read_object_symbols(toolchain: Toolchain, objects: list[Path]) -> list[tuple[Path, set[str], set[str]]]:
+    if toolchain.symbol_kind == "dumpbin":
+        return [(path, *read_symbols_with_dumpbin(toolchain.nm, path)) for path in objects]
+    return read_object_symbols_with_nm(toolchain.nm, objects)
 
 
-def replace_symbols(item: ObjectSymbols, symbols: tuple[set[str], set[str]]) -> ObjectSymbols:
-    defined, undefined = symbols
-    return ObjectSymbols(
-        archive=item.archive,
-        member_name=item.member_name,
-        index=item.index,
-        object_path=item.object_path,
-        defined=frozenset(defined),
-        undefined=frozenset(undefined),
-    )
+def read_object_symbols_with_nm(nm: str, objects: list[Path]) -> list[tuple[Path, set[str], set[str]]]:
+    result: dict[Path, tuple[set[str], set[str]]] = {path: (set(), set()) for path in objects}
+    for batch in chunks(objects, 200):
+        output = subprocess.run(
+            [nm, "-g", "-A", *map(str, batch)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="ignore",
+            check=False,
+        ).stdout
+        for line in output.splitlines():
+            parsed = parse_nm_line(line)
+            if parsed is None:
+                continue
+            path, symbol_type, symbol = parsed
+            item = result.get(path)
+            if item is None:
+                continue
+            defined, undefined = item
+            if symbol_type.upper() == "U":
+                undefined.add(symbol)
+            elif symbol_type.upper() not in {"N", "I"}:
+                defined.add(symbol)
+    return [(path, defined, undefined) for path, (defined, undefined) in result.items()]
 
 
-def read_symbols(tool: SymbolTool, object_path: Path) -> tuple[set[str], set[str]]:
-    if tool.kind == "dumpbin":
-        return read_symbols_with_dumpbin(tool.path, object_path)
-    return read_symbols_with_nm(tool.path, object_path)
-
-
-def read_symbols_with_nm(nm: str, object_path: Path) -> tuple[set[str], set[str]]:
-    output = subprocess.run(
-        [nm, "-g", str(object_path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        errors="ignore",
-        check=False,
-    ).stdout
-    defined: set[str] = set()
-    undefined: set[str] = set()
-    for line in output.splitlines():
-        parsed = parse_nm_line(line)
-        if parsed is None:
-            continue
-        symbol_type, symbol = parsed
-        if symbol_type.upper() == "U":
-            undefined.add(symbol)
-        elif symbol_type.upper() not in {"N", "I"}:
-            defined.add(symbol)
-    return defined, undefined
+def parse_nm_line(line: str) -> tuple[Path, str, str] | None:
+    if ":" not in line:
+        return None
+    path_text, rest = line.split(":", 1)
+    parts = rest.strip().split()
+    if len(parts) < 2:
+        return None
+    if SYMBOL_TYPE_RE.match(parts[-2]):
+        return Path(path_text), parts[-2], parts[-1]
+    if SYMBOL_TYPE_RE.match(parts[0]):
+        return Path(path_text), parts[0], parts[-1]
+    return None
 
 
 def read_symbols_with_dumpbin(dumpbin: str, object_path: Path) -> tuple[set[str], set[str]]:
@@ -296,20 +360,6 @@ def read_symbols_with_dumpbin(dumpbin: str, object_path: Path) -> tuple[set[str]
     return defined, undefined
 
 
-def parse_nm_line(line: str) -> tuple[str, str] | None:
-    stripped = line.strip()
-    if not stripped or stripped.endswith(":"):
-        return None
-    parts = stripped.split()
-    if len(parts) < 2:
-        return None
-    if SYMBOL_TYPE_RE.match(parts[-2]):
-        return parts[-2], parts[-1]
-    if SYMBOL_TYPE_RE.match(parts[0]):
-        return parts[0], parts[-1]
-    return None
-
-
 def parse_dumpbin_line(line: str) -> tuple[bool, str] | None:
     if "|" not in line or "External" not in line:
         return None
@@ -325,29 +375,39 @@ def resolve_object_closure(
     candidate_objects: list[ObjectSymbols],
 ) -> tuple[list[ObjectSymbols], set[str]]:
     selected: list[ObjectSymbols] = []
-    remaining = candidate_objects[:]
-    provided: set[str] = set()
+    selected_paths: set[Path] = set()
+    defined: set[str] = set()
     unresolved: set[str] = set()
-    for item in root_objects:
-        provided.update(item.defined)
-        unresolved.update(item.undefined)
-    unresolved.difference_update(provided)
 
-    while True:
-        best_index = None
-        best_score = 0
-        for index, item in enumerate(remaining):
-            score = len(item.defined & unresolved)
-            if score > best_score:
-                best_index = index
-                best_score = score
-        if best_index is None:
-            break
-        item = remaining.pop(best_index)
-        selected.append(item)
-        provided.update(item.defined)
+    for item in root_objects:
+        defined.update(item.defined)
         unresolved.update(item.undefined)
-        unresolved.difference_update(provided)
+    unresolved.difference_update(defined)
+
+    providers: dict[str, list[ObjectSymbols]] = {}
+    for item in candidate_objects:
+        for symbol in item.defined:
+            providers.setdefault(symbol, []).append(item)
+
+    queue = list(unresolved)
+    while queue:
+        symbol = queue.pop()
+        if symbol in defined:
+            continue
+        provider = next((item for item in providers.get(symbol, []) if item.object_path not in selected_paths), None)
+        if provider is None:
+            continue
+        selected.append(provider)
+        selected_paths.add(provider.object_path)
+        newly_defined = provider.defined - defined
+        defined.update(provider.defined)
+        for dependency in provider.undefined:
+            if dependency not in defined:
+                unresolved.add(dependency)
+                queue.append(dependency)
+        unresolved.difference_update(newly_defined)
+
+    unresolved.difference_update(defined)
     return selected, unresolved
 
 
@@ -359,70 +419,44 @@ def selected_archive_counts(selected: list[ObjectSymbols]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def write_package_archive(package_archive: Path, objects: list[Path], extension: str) -> None:
+def write_package_archive(
+    toolchain: Toolchain,
+    package_archive: Path,
+    objects: list[Path],
+    extension: str,
+) -> None:
     if not objects:
         raise SystemExit("cannot write an empty static archive")
+    package_archive.parent.mkdir(parents=True, exist_ok=True)
     if extension == "lib":
-        write_package_archive_with_lib_exe(package_archive, objects)
+        write_package_archive_with_lib_exe(toolchain, package_archive, objects)
     else:
-        write_package_archive_with_ar(package_archive, objects)
+        write_package_archive_with_ar(toolchain, package_archive, objects)
 
 
-def write_package_archive_with_ar(package_archive: Path, objects: list[Path]) -> None:
-    ar = find_archiver()
+def write_package_archive_with_ar(toolchain: Toolchain, package_archive: Path, objects: list[Path]) -> None:
     tmp = package_archive.with_suffix(package_archive.suffix + ".tmp")
     tmp.unlink(missing_ok=True)
-    for index, chunk in enumerate(chunks(objects, 80)):
+    for index, batch in enumerate(chunks(objects, 200)):
         operation = "crs" if index == 0 else "rs"
-        subprocess.run([ar, operation, str(tmp), *map(str, chunk)], check=True)
-    ranlib = find_ranlib()
-    if ranlib:
-        subprocess.run([ranlib, str(tmp)], check=True)
+        subprocess.run([toolchain.ar, operation, str(tmp), *map(str, batch)], check=True)
+    if toolchain.ranlib:
+        subprocess.run([toolchain.ranlib, str(tmp)], check=True)
     tmp.replace(package_archive)
 
 
-def write_package_archive_with_lib_exe(package_archive: Path, objects: list[Path]) -> None:
-    lib = shutil.which("lib") or shutil.which("lib.exe")
-    if not lib:
-        raise SystemExit("lib.exe is required to update Windows static libraries")
+def write_package_archive_with_lib_exe(toolchain: Toolchain, package_archive: Path, objects: list[Path]) -> None:
+    if not toolchain.lib:
+        raise SystemExit("lib.exe is required for Windows static libraries")
     rsp = package_archive.with_suffix(".objects.rsp")
     tmp = package_archive.with_suffix(".tmp.lib")
-    rsp.write_text(
-        "\n".join(map(quote_for_response, objects)) + "\n",
-        encoding="utf-8",
-    )
-    subprocess.run([lib, "/NOLOGO", f"/OUT:{tmp}", f"@{rsp}"], check=True)
+    rsp.write_text("\n".join(f'"{path}"' for path in objects) + "\n", encoding="utf-8")
+    subprocess.run([toolchain.lib, "/NOLOGO", f"/OUT:{tmp}", f"@{rsp}"], check=True)
     tmp.replace(package_archive)
     rsp.unlink(missing_ok=True)
 
 
-def quote_for_response(path: Path) -> str:
-    return f'"{path}"'
-
-
-def find_archiver() -> str:
-    configured = os.environ.get("AR")
-    if configured:
-        return shutil.which(configured) or configured
-    for candidate in ("llvm-ar", "ar"):
-        found = shutil.which(candidate)
-        if found:
-            return found
-    raise SystemExit("llvm-ar or ar is required")
-
-
-def find_ranlib() -> str | None:
-    configured = os.environ.get("RANLIB")
-    if configured:
-        return shutil.which(configured) or configured
-    for candidate in ("llvm-ranlib", "ranlib"):
-        found = shutil.which(candidate)
-        if found:
-            return found
-    return None
-
-
-def chunks(items: list[Path], size: int) -> list[list[Path]]:
+def chunks(items: list, size: int) -> list[list]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 

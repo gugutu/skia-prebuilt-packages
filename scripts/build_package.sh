@@ -34,6 +34,7 @@ args_file="$package_dir/gn_args.txt"
 lib_ext="a"
 package_lib="$lib_dir/lib_skia.a"
 package_library_target="skia_prebuilt_package"
+package_arch=""
 
 if [[ ! -f "$skia/BUILD.gn" ]]; then
   echo "Skia source tree is missing at $skia" >&2
@@ -275,6 +276,7 @@ prepare_unified_static_package_target
 target_args="$(mktemp)"
 case "$package_target" in
   macos-arm64)
+    package_arch="arm64"
     cat > "$target_args" <<'ARGS'
 target_os="mac"
 target_cpu="arm64"
@@ -287,6 +289,7 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   macos-x64)
+    package_arch="x86_64"
     cat > "$target_args" <<'ARGS'
 target_os="mac"
 target_cpu="x64"
@@ -299,6 +302,7 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   ios-arm64)
+    package_arch="arm64"
     SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
     export SKIA_DAWN_IOS_SYSROOT
     export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
@@ -315,6 +319,7 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   ios-simulator-arm64)
+    package_arch="arm64"
     SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
     export SKIA_DAWN_IOS_SYSROOT
     export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
@@ -332,6 +337,7 @@ dawn_enable_d3d12=false
 ARGS
     ;;
   android-arm64)
+    package_arch="arm64"
     android_ndk="${ANDROID_NDK:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
     if [[ -z "$android_ndk" || ! -d "$android_ndk" ]]; then
       echo "ANDROID_NDK, ANDROID_NDK_HOME, or ANDROID_NDK_ROOT must point to an Android NDK." >&2
@@ -371,6 +377,7 @@ extra_cflags=["-mno-outline-atomics"]
 ARGS
     ;;
   windows-x64)
+    package_arch="x64"
     export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
     package_lib="$lib_dir/skia.lib"
@@ -389,6 +396,7 @@ dawn_enable_d3d12=true
 ARGS
     ;;
   windows-arm64)
+    package_arch="arm64"
     export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
     package_lib="$lib_dir/skia.lib"
@@ -457,6 +465,8 @@ skia_use_system_libjpeg_turbo=false
 skia_use_libwebp_decode=true
 skia_use_libwebp_encode=true
 skia_use_system_libwebp=false
+skia_use_dng_sdk=false
+skia_use_piex=false
 skia_use_wuffs=true
 skia_use_zlib=true
 skia_use_system_zlib=false
@@ -584,6 +594,7 @@ object_closure_manifest="$package_dir/object_closure_manifest.json"
   --package-archive "$package_lib" \
   --candidate-root "$out_dir" \
   --extension "$lib_ext" \
+  --target-arch "$package_arch" \
   --work-dir "$object_closure_work" \
   --manifest "$object_closure_manifest"
 
