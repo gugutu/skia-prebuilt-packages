@@ -31,6 +31,7 @@ include_dir="$package_dir/include"
 generated_include_dir="$package_dir/generated-include"
 license_dir="$package_dir/LICENSES"
 args_file="$package_dir/gn_args.txt"
+runtime_libraries_file="$package_dir/runtime_libraries.txt"
 lib_ext="a"
 package_lib="$lib_dir/lib_skia.a"
 package_library_target="skia_prebuilt_package"
@@ -248,16 +249,13 @@ if [[ ! -f "$package_lib" ]]; then
   exit 1
 fi
 
-runtime_libraries=()
-while IFS= read -r library; do
-  [[ -n "$library" ]] || continue
-  runtime_libraries+=("$library")
-done < <("$python_cmd" "$root/scripts/package_runtime_libraries.py" \
+"$python_cmd" "$root/scripts/package_runtime_libraries.py" \
   --gn "$gn_bin" \
   --out "$out_dir" \
   --lib-dir "$lib_dir" \
   --extension "$lib_ext" \
-  --target "//third_party/dawn")
+  --target "//third_party/dawn" \
+  > "$runtime_libraries_file"
 echo "::endgroup::"
 
 echo "::group::collect public headers"
@@ -397,7 +395,7 @@ echo "::group::write package metadata"
   "$package_tag" \
   "$(git -C "$skia" rev-parse HEAD)" \
   "$(basename "$package_lib")" \
-  "${runtime_libraries[@]}" <<'PY'
+  "$runtime_libraries_file" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -409,7 +407,13 @@ skia_ref = sys.argv[4]
 skia_label = sys.argv[5]
 package_tag = sys.argv[6]
 skia_commit = sys.argv[7]
-libraries = sys.argv[8:]
+libraries = [sys.argv[8]]
+runtime_libraries_file = Path(sys.argv[9])
+libraries.extend(
+    line.strip()
+    for line in runtime_libraries_file.read_text(encoding="utf-8").splitlines()
+    if line.strip()
+)
 
 gn_args = {}
 for line in args_file.read_text(encoding="utf-8").splitlines():
