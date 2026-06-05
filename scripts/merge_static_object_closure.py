@@ -63,6 +63,8 @@ def main() -> int:
         work_dir / "objects" / "root",
         args.extension,
     )
+    if not root_objects:
+        raise SystemExit(f"root archive has no object members after extraction: {args.root.resolve()}")
     candidate_objects: list[ObjectSymbols] = []
     for archive in discover_archives(args.candidate_root, args.extension, args.root.resolve()):
         normalized = normalize_archive(
@@ -274,7 +276,7 @@ def extract_lib_objects(toolchain: Toolchain, archive: Path, destination: Path) 
     if not toolchain.lib:
         raise SystemExit("lib.exe is required for Windows static libraries")
     output = subprocess.run(
-        [toolchain.lib, "/NOLOGO", f"/LIST:{archive}"],
+        [toolchain.lib, "/NOLOGO", "/LIST", str(archive)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
