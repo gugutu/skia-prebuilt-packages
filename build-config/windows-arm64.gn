@@ -7,3 +7,5 @@ skia_use_fontconfig=false
 skia_enable_fontmgr_win=true
 skia_enable_fontmgr_win_gdi=true
 skia_use_vulkan=true
+skia_use_dng_sdk=false
+skia_use_piex=false

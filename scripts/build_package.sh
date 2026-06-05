@@ -373,7 +373,7 @@ metadata = {
         "codec_png": True,
         "codec_jpeg": True,
         "codec_webp": True,
-        "codec_raw": True,
+        "codec_raw": gn_args.get("skia_use_dng_sdk") == "true",
         "pdf": False,
         "skottie": False,
         "icu": False,
