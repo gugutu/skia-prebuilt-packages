@@ -28,15 +28,11 @@ out_dir="out/$package_target"
 package_dir="$root/work/package/$package_target"
 lib_dir="$package_dir/lib"
 include_dir="$package_dir/include"
-generated_include_dir="$package_dir/generated-include"
 license_dir="$package_dir/LICENSES"
 args_file="$package_dir/gn_args.txt"
-runtime_libraries_file="$package_dir/runtime_libraries.txt"
-runtime_libraries_manifest="$package_dir/runtime_libraries_manifest.json"
 lib_ext="a"
 package_lib="$lib_dir/lib_skia.a"
 package_library_target="skia_prebuilt_package"
-package_arch=""
 
 if [[ ! -f "$skia/BUILD.gn" ]]; then
   echo "Skia source tree is missing at $skia" >&2
@@ -56,25 +52,14 @@ fi
 
 case "$package_target" in
   macos-arm64)
-    package_arch="arm64"
     ;;
   macos-x64)
-    package_arch="x86_64"
     ;;
   ios-arm64)
-    package_arch="arm64"
-    SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
-    export SKIA_DAWN_IOS_SYSROOT
-    export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
     ;;
   ios-simulator-arm64)
-    package_arch="arm64"
-    SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-    export SKIA_DAWN_IOS_SYSROOT
-    export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
     ;;
   android-arm64)
-    package_arch="arm64"
     android_ndk="${ANDROID_NDK:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
     if [[ -z "$android_ndk" || ! -d "$android_ndk" ]]; then
       echo "ANDROID_NDK, ANDROID_NDK_HOME, or ANDROID_NDK_ROOT must point to an Android NDK." >&2
@@ -94,14 +79,10 @@ case "$package_target" in
     export LLVM_NM="$android_toolchain/llvm-nm"
     ;;
   windows-x64)
-    package_arch="x64"
-    export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
     package_lib="$lib_dir/skia.lib"
     ;;
   windows-arm64)
-    package_arch="arm64"
-    export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
     package_lib="$lib_dir/skia.lib"
     ;;
@@ -120,74 +101,6 @@ esac
     printf 'ndk_api=%s\n' "${ANDROID_API_LEVEL:-29}"
   fi
 } > "$args_file"
-
-"$python_cmd" - "$args_file" "$package_target" <<'PY'
-from pathlib import Path
-import sys
-
-args_file = Path(sys.argv[1])
-target = sys.argv[2]
-args = {}
-for line in args_file.read_text().splitlines():
-    line = line.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        continue
-    key, value = line.split("=", 1)
-    args[key.strip()] = value.strip()
-
-bundled_third_party = {
-    "skia_use_system_icu": "false",
-    "skia_use_system_harfbuzz": "false",
-    "skia_use_system_expat": "false",
-    "skia_use_system_libpng": "false",
-    "skia_use_system_libjpeg_turbo": "false",
-    "skia_use_system_libwebp": "false",
-    "skia_use_system_zlib": "false",
-}
-missing_bundled = [
-    f"{key}={expected}"
-    for key, expected in bundled_third_party.items()
-    if args.get(key) != expected
-]
-if missing_bundled:
-    joined = ", ".join(missing_bundled)
-    raise SystemExit(f"{target}: bundled third-party config is incomplete: {joined}")
-
-graphite_only_backend = {
-    "skia_enable_graphite": "true",
-    "skia_use_dawn": "true",
-    "skia_enable_ganesh": "false",
-    "skia_use_gl": "false",
-    "skia_use_metal": "false",
-    "skia_use_vulkan": "false",
-    "skia_use_direct3d": "false",
-}
-missing_backend = [
-    f"{key}={expected}"
-    for key, expected in graphite_only_backend.items()
-    if args.get(key) != expected
-]
-if missing_backend:
-    joined = ", ".join(missing_backend)
-    raise SystemExit(f"{target}: expected Graphite+Dawn-only backend config: {joined}")
-
-if args.get("skia_use_freetype") == "true":
-    required = {
-        "skia_use_system_freetype2": "false",
-        "skia_use_freetype_woff2": "false",
-        "skia_use_freetype_svg": "true",
-        "skia_use_freetype_zlib": "true",
-        "skia_use_freetype_zlib_bundled": "true",
-    }
-    missing = [
-        f"{key}={expected}"
-        for key, expected in required.items()
-        if args.get(key) != expected
-    ]
-    if missing:
-        joined = ", ".join(missing)
-        raise SystemExit(f"{target}: bundled FreeType config is incomplete: {joined}")
-PY
 
 cd "$skia"
 
@@ -215,8 +128,8 @@ if [[ "$mode" == "build" ]]; then
   exit 0
 fi
 
-rm -rf "$lib_dir" "$include_dir" "$generated_include_dir" "$license_dir"
-mkdir -p "$lib_dir" "$include_dir" "$generated_include_dir" "$license_dir"
+rm -rf "$lib_dir" "$include_dir" "$license_dir"
+mkdir -p "$lib_dir" "$include_dir" "$license_dir"
 
 echo "::group::package static library"
 
@@ -234,27 +147,7 @@ if [[ "${#package_lib_candidates[@]}" -ne 1 ]]; then
   exit 1
 fi
 
-object_closure_work="$package_dir/.object-closure-work"
-object_closure_manifest="$package_dir/object_closure_manifest.json"
-"$python_cmd" "$root/scripts/package_runtime_libraries.py" \
-  --gn "$gn_bin" \
-  --source-root "$skia" \
-  --out "$out_dir" \
-  --lib-dir "$lib_dir" \
-  --extension "$lib_ext" \
-  --manifest "$runtime_libraries_manifest" \
-  --output-target "//third_party/dawn:dawn_cmake" \
-  > "$runtime_libraries_file"
-
-"$python_cmd" "$root/scripts/merge_static_object_closure.py" \
-  --root "${package_lib_candidates[0]}" \
-  --package-archive "$package_lib" \
-  --candidate-root "$out_dir" \
-  --extension "$lib_ext" \
-  --target-arch "$package_arch" \
-  --work-dir "$object_closure_work" \
-  --exclude-archive-manifest "$runtime_libraries_manifest" \
-  --manifest "$object_closure_manifest"
+cp "${package_lib_candidates[0]}" "$package_lib"
 
 if [[ ! -f "$package_lib" ]]; then
   echo "package library was not generated: $package_lib" >&2
@@ -276,25 +169,10 @@ done
 
 echo "::endgroup::"
 
-echo "::group::generate dawn headers"
-if [[ -f "$skia/third_party/externals/dawn/generator/dawn_json_generator.py" ]]; then
-  (
-    cd "$skia/third_party/externals/dawn"
-    PYTHONPATH="$skia/third_party/externals" "$python_cmd" generator/dawn_json_generator.py \
-      --dawn-json src/dawn/dawn.json \
-      --targets headers,cpp_headers \
-      --template-dir generator/templates \
-      --output-dir "$generated_include_dir"
-  )
-fi
-echo "::endgroup::"
-
 echo "::group::complete and verify package headers"
 "$python_cmd" "$root/scripts/package_headers.py" \
   --skia "$skia" \
-  --sdk "$include_dir/skia" \
-  --dawn-root "$skia/third_party/externals/dawn" \
-  --generated "$generated_include_dir/include"
+  --sdk "$include_dir/skia"
 echo "::endgroup::"
 
 {
@@ -303,12 +181,7 @@ echo "::endgroup::"
   echo "skia_commit=$(git -C "$skia" rev-parse HEAD)"
   echo "target=$package_target"
   echo "library=lib/$(basename "$package_lib")"
-  while IFS= read -r runtime_library; do
-    [[ -n "$runtime_library" ]] || continue
-    echo "library=lib/$runtime_library"
-  done < "$runtime_libraries_file"
   echo "include_path=include/skia"
-  echo "include_path=generated-include/include"
 } > "$package_dir/manifest.txt"
 
 echo "::group::collect licenses"
@@ -324,7 +197,7 @@ license_dir.mkdir(parents=True, exist_ok=True)
 
 roots = [
     ("skia", skia),
-    ("dawn", skia / "third_party/externals/dawn"),
+    ("dng_sdk", skia / "third_party/externals/dng_sdk"),
     ("expat", skia / "third_party/externals/expat"),
     ("freetype2", skia / "third_party/externals/freetype2"),
     ("harfbuzz", skia / "third_party/externals/harfbuzz"),
@@ -332,6 +205,7 @@ roots = [
     ("libjpeg-turbo", skia / "third_party/externals/libjpeg-turbo"),
     ("libpng", skia / "third_party/externals/libpng"),
     ("libwebp", skia / "third_party/externals/libwebp"),
+    ("piex", skia / "third_party/externals/piex"),
     ("wuffs", skia / "third_party/externals/wuffs"),
     ("zlib", skia / "third_party/externals/zlib"),
 ]
@@ -403,8 +277,7 @@ echo "::group::write package metadata"
   "$skia_label" \
   "$package_tag" \
   "$(git -C "$skia" rev-parse HEAD)" \
-  "$(basename "$package_lib")" \
-  "$runtime_libraries_file" <<'PY'
+  "$(basename "$package_lib")" <<'PY'
 from pathlib import Path
 import json
 import sys
@@ -417,12 +290,6 @@ skia_label = sys.argv[5]
 package_tag = sys.argv[6]
 skia_commit = sys.argv[7]
 libraries = [sys.argv[8]]
-runtime_libraries_file = Path(sys.argv[9])
-libraries.extend(
-    line.strip()
-    for line in runtime_libraries_file.read_text(encoding="utf-8").splitlines()
-    if line.strip()
-)
 
 gn_args = {}
 for line in args_file.read_text(encoding="utf-8").splitlines():
@@ -466,13 +333,13 @@ target_link = {
     "windows-x64": {
         "rust_target": "x86_64-pc-windows-msvc",
         "frameworks": [],
-        "system_libs": ["d3d12", "dxgi", "dxguid", "dwrite", "gdi32", "ole32", "user32", "windowscodecs"],
+        "system_libs": ["dwrite", "gdi32", "ole32", "user32", "vulkan-1", "windowscodecs"],
         "min_os": "windows10",
     },
     "windows-arm64": {
         "rust_target": "aarch64-pc-windows-msvc",
         "frameworks": [],
-        "system_libs": ["d3d12", "dxgi", "dxguid", "dwrite", "gdi32", "ole32", "user32", "windowscodecs"],
+        "system_libs": ["dwrite", "gdi32", "ole32", "user32", "vulkan-1", "windowscodecs"],
         "min_os": "windows10",
     },
 }
@@ -491,12 +358,11 @@ metadata = {
     "libraries": [f"lib/{library}" for library in libraries],
     "include_dirs": [
         "include/skia",
-        "generated-include/include",
     ],
     "cxx_standard": "c++20",
     "backend": {
         "graphite": True,
-        "dawn": True,
+        "dawn": False,
         "ganesh": False,
     },
     "features": {
@@ -507,6 +373,7 @@ metadata = {
         "codec_png": True,
         "codec_jpeg": True,
         "codec_webp": True,
+        "codec_raw": True,
         "pdf": False,
         "skottie": False,
         "icu": False,

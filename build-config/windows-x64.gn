@@ -6,6 +6,4 @@ skia_use_freetype=false
 skia_use_fontconfig=false
 skia_enable_fontmgr_win=true
 skia_enable_fontmgr_win_gdi=true
-dawn_enable_metal=false
-dawn_enable_vulkan=false
-dawn_enable_d3d12=true
+skia_use_vulkan=true

@@ -3,6 +3,4 @@ target_cpu="arm64"
 skia_use_fonthost_mac=true
 skia_use_freetype=false
 skia_use_fontconfig=false
-dawn_enable_metal=true
-dawn_enable_vulkan=false
-dawn_enable_d3d12=false
+skia_use_metal=true

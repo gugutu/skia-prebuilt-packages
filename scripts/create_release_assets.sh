@@ -105,7 +105,7 @@ cat > "$asset_dir/release-notes.md" <<EOF
 Skia prebuilt packages for $tag.
 
 Assets:
-- Per-target package archives contain \`include/\`, \`generated-include/\`, \`lib/\`, \`LICENSES/\`, \`metadata.json\`, \`manifest.txt\`, and \`gn_args.txt\`.
+- Per-target package archives contain \`include/\`, \`lib/\`, \`LICENSES/\`, \`metadata.json\`, \`manifest.txt\`, and \`gn_args.txt\`.
 - \`manifest.json\` maps Rust targets to package assets and records link metadata.
 - \`checksums.txt\` contains SHA-256 checksums for release assets.
 
