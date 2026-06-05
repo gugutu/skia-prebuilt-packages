@@ -247,6 +247,17 @@ if [[ ! -f "$package_lib" ]]; then
   echo "package library was not generated: $package_lib" >&2
   exit 1
 fi
+
+runtime_libraries=()
+while IFS= read -r library; do
+  [[ -n "$library" ]] || continue
+  runtime_libraries+=("$library")
+done < <("$python_cmd" "$root/scripts/package_runtime_libraries.py" \
+  --gn "$gn_bin" \
+  --out "$out_dir" \
+  --lib-dir "$lib_dir" \
+  --extension "$lib_ext" \
+  --target "//third_party/dawn")
 echo "::endgroup::"
 
 echo "::group::collect public headers"
@@ -385,7 +396,8 @@ echo "::group::write package metadata"
   "$skia_label" \
   "$package_tag" \
   "$(git -C "$skia" rev-parse HEAD)" \
-  "$(basename "$package_lib")" <<'PY'
+  "$(basename "$package_lib")" \
+  "${runtime_libraries[@]}" <<'PY'
 from pathlib import Path
 import json
 import sys

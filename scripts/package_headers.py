@@ -125,6 +125,8 @@ class HeaderPackage:
         self.seen: set[Path] = set()
 
     def collect(self) -> None:
+        self.copy_runtime_public_headers()
+
         self.queue = []
         for root in self.package_roots:
             self.queue.extend(source_files(root))
@@ -139,14 +141,25 @@ class HeaderPackage:
 
         self.follow_closure()
 
+    def copy_runtime_public_headers(self) -> None:
+        dawn_include = self.dawn_root / "include"
+        if not dawn_include.is_dir():
+            return
+        for source in source_files(dawn_include):
+            destination = self.generated / source.relative_to(dawn_include)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
     def verify(self) -> None:
         missing: list[tuple[Path, str]] = []
         for root in self.package_roots:
             for header in source_files(root):
                 for include in includes_in_file(header):
-                    if include in OPTIONAL_MISSING or not is_package_include(include):
+                    if include in OPTIONAL_MISSING:
                         continue
-                    if not self.find_in_package(header, include):
+                    if not self.find_in_package(header, include) and (
+                        is_package_include(include) or self.find_in_checkout(header, include)
+                    ):
                         missing.append((header, include))
 
         if missing:
@@ -162,7 +175,7 @@ class HeaderPackage:
             for include in includes_in_file(header):
                 if self.find_in_package(header, include):
                     continue
-                if not is_package_include(include):
+                if not is_package_include(include) and not self.find_in_checkout(header, include):
                     continue
                 self.copy_checkout_header(header, include)
 
@@ -225,9 +238,16 @@ class HeaderPackage:
                 (self.generated / include, self.generated / include_path),
                 (self.dawn_root / include, self.generated / include_path),
                 (self.dawn_root / "include" / include, self.generated / include_path),
+                (self.dawn_root / "src" / include, self.generated / include_path),
             ]
         )
         return candidates
+
+    def find_in_checkout(self, current: Path, include: str) -> Path | None:
+        for source, _ in self.checkout_candidates(current, include):
+            if source.is_file():
+                return source
+        return None
 
     def copy_checkout_header(self, current: Path, include: str) -> bool:
         for source, destination in self.checkout_candidates(current, include):
