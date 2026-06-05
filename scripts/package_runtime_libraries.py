@@ -51,9 +51,30 @@ def gn_desc_libs(gn: str, out_dir: str, target: str) -> list[str]:
         check=True,
     ).stdout
     parsed = json.loads(output)
-    if not isinstance(parsed, list):
+    libs = extract_libs(parsed)
+    if libs is None:
         raise SystemExit(f"unexpected gn desc libs shape for {target}: {type(parsed).__name__}")
-    return [str(item) for item in parsed]
+    return libs
+
+
+def extract_libs(value: object) -> list[str] | None:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if not isinstance(value, dict):
+        return None
+
+    collected: list[str] = []
+    if isinstance(value.get("libs"), list):
+        collected.extend(str(item) for item in value["libs"])
+
+    for key, item in value.items():
+        if key == "libs":
+            continue
+        nested = extract_libs(item)
+        if nested:
+            collected.extend(nested)
+
+    return collected
 
 
 def resolve_gn_lib_path(out_dir: str, item: str) -> Path:
