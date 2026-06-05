@@ -45,6 +45,7 @@ def main() -> int:
     parser.add_argument("--target-arch", required=True)
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--exclude-archive-manifest", type=Path)
     args = parser.parse_args()
 
     start = time.monotonic()
@@ -64,7 +65,8 @@ def main() -> int:
     if not root_objects:
         raise SystemExit(f"root archive has no object members after extraction: {args.root.resolve()}")
     candidate_objects: list[ObjectSymbols] = []
-    for archive in discover_archives(args.candidate_root, args.extension, args.root.resolve()):
+    excluded_archives = read_excluded_archives(args.exclude_archive_manifest)
+    for archive in discover_archives(args.candidate_root, args.extension, args.root.resolve(), excluded_archives):
         normalized = normalize_archive(
             archive,
             work_dir / "normalized" / archive_digest(archive),
@@ -96,6 +98,7 @@ def main() -> int:
                 "root": str(args.root.resolve()),
                 "package_archive": str(args.package_archive.resolve()),
                 "candidate_root": str(args.candidate_root.resolve()),
+                "excluded_archives": sorted(str(path) for path in excluded_archives),
                 "root_object_count": len(root_objects),
                 "candidate_object_count": len(candidate_objects),
                 "selected_object_count": len(selected),
@@ -192,7 +195,18 @@ def normalize_archive(archive: Path, destination_dir: Path, target_arch: str) ->
     raise SystemExit(f"not a static archive: {archive}; magic={magic.hex()}")
 
 
-def discover_archives(candidate_root: Path, extension: str, root: Path) -> list[Path]:
+def read_excluded_archives(manifest: Path | None) -> set[Path]:
+    if manifest is None:
+        return set()
+    parsed = json.loads(manifest.read_text(encoding="utf-8"))
+    return {
+        Path(item["source"]).resolve()
+        for item in parsed.get("libraries", [])
+        if isinstance(item, dict) and item.get("source")
+    }
+
+
+def discover_archives(candidate_root: Path, extension: str, root: Path, excluded: set[Path]) -> list[Path]:
     suffix = f".{extension}"
     archives: list[Path] = []
     for path in candidate_root.rglob(f"*{suffix}"):
@@ -200,6 +214,8 @@ def discover_archives(candidate_root: Path, extension: str, root: Path) -> list[
             continue
         resolved = path.resolve()
         if resolved == root:
+            continue
+        if resolved in excluded:
             continue
         archives.append(resolved)
     return sorted(dict.fromkeys(archives))

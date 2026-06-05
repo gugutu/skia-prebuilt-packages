@@ -32,6 +32,7 @@ generated_include_dir="$package_dir/generated-include"
 license_dir="$package_dir/LICENSES"
 args_file="$package_dir/gn_args.txt"
 runtime_libraries_file="$package_dir/runtime_libraries.txt"
+runtime_libraries_manifest="$package_dir/runtime_libraries_manifest.json"
 lib_ext="a"
 package_lib="$lib_dir/lib_skia.a"
 package_library_target="skia_prebuilt_package"
@@ -235,6 +236,16 @@ fi
 
 object_closure_work="$package_dir/.object-closure-work"
 object_closure_manifest="$package_dir/object_closure_manifest.json"
+"$python_cmd" "$root/scripts/package_runtime_libraries.py" \
+  --gn "$gn_bin" \
+  --source-root "$skia" \
+  --out "$out_dir" \
+  --lib-dir "$lib_dir" \
+  --extension "$lib_ext" \
+  --manifest "$runtime_libraries_manifest" \
+  --output-target "//third_party/dawn:dawn_cmake" \
+  > "$runtime_libraries_file"
+
 "$python_cmd" "$root/scripts/merge_static_object_closure.py" \
   --root "${package_lib_candidates[0]}" \
   --package-archive "$package_lib" \
@@ -242,6 +253,7 @@ object_closure_manifest="$package_dir/object_closure_manifest.json"
   --extension "$lib_ext" \
   --target-arch "$package_arch" \
   --work-dir "$object_closure_work" \
+  --exclude-archive-manifest "$runtime_libraries_manifest" \
   --manifest "$object_closure_manifest"
 
 if [[ ! -f "$package_lib" ]]; then
@@ -249,13 +261,6 @@ if [[ ! -f "$package_lib" ]]; then
   exit 1
 fi
 
-"$python_cmd" "$root/scripts/package_runtime_libraries.py" \
-  --gn "$gn_bin" \
-  --out "$out_dir" \
-  --lib-dir "$lib_dir" \
-  --extension "$lib_ext" \
-  --target "//third_party/dawn" \
-  > "$runtime_libraries_file"
 echo "::endgroup::"
 
 echo "::group::collect public headers"
@@ -298,6 +303,10 @@ echo "::endgroup::"
   echo "skia_commit=$(git -C "$skia" rev-parse HEAD)"
   echo "target=$package_target"
   echo "library=lib/$(basename "$package_lib")"
+  while IFS= read -r runtime_library; do
+    [[ -n "$runtime_library" ]] || continue
+    echo "library=lib/$runtime_library"
+  done < "$runtime_libraries_file"
   echo "include_path=include/skia"
   echo "include_path=generated-include/include"
 } > "$package_dir/manifest.txt"
