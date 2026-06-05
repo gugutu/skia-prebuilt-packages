@@ -1,0 +1,9 @@
+target_os="ios"
+target_cpu="arm64"
+ios_min_target="15.0"
+skia_use_fonthost_mac=true
+skia_use_freetype=false
+skia_use_fontconfig=false
+dawn_enable_metal=true
+dawn_enable_vulkan=false
+dawn_enable_d3d12=false

@@ -92,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           source_hash="$(git hash-object scripts/prepare_source.sh)"
-          out_hash="$(python3 scripts/skia_out_cache_key.py)"
+          out_hash="$(python3 scripts/skia_out_cache_key.py "$SKIA_PACKAGE_TARGET")"
           echo "source=$source_hash" >> "$GITHUB_OUTPUT"
           echo "out=$out_hash" >> "$GITHUB_OUTPUT"
 
@@ -107,6 +107,8 @@ jobs:
         with:
           path: work/skia-source
           key: skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.source }}-${{ env.SKIA_SOURCE_CACHE_EPOCH }}
+          restore-keys: |
+            skia-source-${{ runner.os }}-${{ runner.arch }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-
 
       - name: Prepare Skia source
         if: steps.restore-source-cache.outputs.cache-hit != 'true'
@@ -193,6 +195,8 @@ jobs:
         with:
           path: work/skia-source/out/${{ matrix.target }}
           key: skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-${{ steps.cache-config.outputs.out }}-${{ env.SKIA_OUT_CACHE_EPOCH }}
+          restore-keys: |
+            skia-out-${{ matrix.target }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.toolchain }}-${{ env.SKIA_REF_SLUG }}-${{ needs.resolve-skia.outputs.skia_commit }}-
 
       - name: Build Skia
         shell: bash

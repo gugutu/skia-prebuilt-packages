@@ -42,300 +42,34 @@ if [[ ! -f "$skia/BUILD.gn" ]]; then
   exit 1
 fi
 
-# SKIA_OUT_CACHE_INPUT_BEGIN
-patch_dawn_cmake_helpers() {
-  local cmake_utils="$skia/third_party/dawn/cmake_utils.py"
-  local build_dawn="$skia/third_party/dawn/build_dawn.py"
-
-  if [[ -f "$cmake_utils" ]] && ! grep -q 'if os == "ios":' "$cmake_utils"; then
-    "$python_cmd" - "$cmake_utils" <<'PY'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-text = path.read_text()
-needle = '''  if os == "mac":
-    target_cpu_map = {
-      "arm64": "arm64",
-      "x64": "x86_64",
-    }
-    return "Darwin", target_cpu_map[cpu]
-
-'''
-insert = needle + '''  if os == "ios":
-    target_cpu_map = {
-      "arm64": "arm64",
-      "x64": "x86_64",
-    }
-    return "iOS", target_cpu_map[cpu]
-
-'''
-if needle not in text:
-    raise SystemExit("could not find Dawn mac OS mapping")
-path.write_text(text.replace(needle, insert))
-PY
-  fi
-
-  if [[ -f "$cmake_utils" ]] && ! grep -q 'SKIA_DAWN_WINDOWS_HOST_TOOL_CPU' "$cmake_utils"; then
-    "$python_cmd" - "$cmake_utils" <<'PY'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-text = path.read_text()
-needle = '''  # Explicitly tell CMake where to find the Resource Compiler, Manifest Tool, and Archiver.
-  rc_exe_path = os.path.join(args.win_sdk, "bin", args.win_sdk_version,
-                             args.target_cpu, "rc.exe")
-  win_cfgs.append(f"-DCMAKE_RC_COMPILER={rc_exe_path.replace(os.sep, '/')}")
-  mt_exe_path = os.path.join(args.win_sdk, "bin", args.win_sdk_version,
-                             args.target_cpu, "mt.exe")
-  win_cfgs.append(f"-DCMAKE_MT={mt_exe_path.replace(os.sep, '/')}")
-
-'''
-insert = '''  # Explicitly tell CMake where to find the Resource Compiler, Manifest Tool, and Archiver.
-  # rc.exe and mt.exe run on the host during configure/link steps, so ARM64
-  # cross-builds from x64 runners must keep using x64 host tools.
-  host_tool_cpu = os.environ.get("SKIA_DAWN_WINDOWS_HOST_TOOL_CPU", args.target_cpu)
-  rc_exe_path = os.path.join(args.win_sdk, "bin", args.win_sdk_version,
-                             host_tool_cpu, "rc.exe")
-  win_cfgs.append(f"-DCMAKE_RC_COMPILER={rc_exe_path.replace(os.sep, '/')}")
-  mt_exe_path = os.path.join(args.win_sdk, "bin", args.win_sdk_version,
-                             host_tool_cpu, "mt.exe")
-  win_cfgs.append(f"-DCMAKE_MT={mt_exe_path.replace(os.sep, '/')}")
-
-'''
-if needle not in text:
-    raise SystemExit("could not find Dawn Windows rc/mt block")
-path.write_text(text.replace(needle, insert))
-PY
-  fi
-
-  if [[ -f "$build_dawn" ]] && ! grep -q 'SKIA_DAWN_IOS_SYSROOT' "$build_dawn"; then
-    "$python_cmd" - "$build_dawn" <<'PY'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-text = path.read_text()
-needle = '''  if target_os == "Darwin" or target_os == "iOS":
-    configure_cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={target_cpu}")
-
-'''
-insert = '''  if target_os == "Darwin" or target_os == "iOS":
-    configure_cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={target_cpu}")
-
-  if target_os == "iOS":
-    ios_sysroot = os.environ.get("SKIA_DAWN_IOS_SYSROOT")
-    if ios_sysroot:
-      configure_cmd.append(f"-DCMAKE_OSX_SYSROOT={ios_sysroot}")
-    ios_deployment_target = os.environ.get("SKIA_DAWN_IOS_DEPLOYMENT_TARGET")
-    if ios_deployment_target:
-      configure_cmd.append(f"-DCMAKE_OSX_DEPLOYMENT_TARGET={ios_deployment_target}")
-
-'''
-if needle not in text:
-    raise SystemExit("could not find Dawn Apple CMake block")
-path.write_text(text.replace(needle, insert))
-PY
-  fi
-
-  if [[ -f "$build_dawn" ]] && ! grep -q 'SKIA_DAWN_TRIM_UNUSED_OPTIONS' "$build_dawn"; then
-    "$python_cmd" - "$build_dawn" <<'PY'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-text = path.read_text()
-needle = '''      "-DTINT_ENABLE_INSTALL=OFF",
-'''
-insert = '''      "-DTINT_ENABLE_INSTALL=OFF",
-      # SKIA_DAWN_TRIM_UNUSED_OPTIONS
-      # Skia Graphite/Dawn creates WGSL shader modules and then lets Dawn
-      # translate them to the selected platform backend. Keep WGSL reader and
-      # each enabled backend writer, but do not build optional tools, alternate
-      # shader input paths, unused backends, samples, fuzzers, or debug helpers.
-      "-DDAWN_ENABLE_NULL=OFF",
-      "-DDAWN_ENABLE_WEBGPU_ON_WEBGPU=OFF",
-      "-DDAWN_ENABLE_DESKTOP_GL=OFF",
-      "-DDAWN_ENABLE_ASAN=OFF",
-      "-DDAWN_ENABLE_TSAN=OFF",
-      "-DDAWN_ENABLE_MSAN=OFF",
-      "-DDAWN_ENABLE_UBSAN=OFF",
-      "-DDAWN_ENABLE_RTTI=OFF",
-      "-DDAWN_USE_WAYLAND=OFF",
-      "-DDAWN_USE_X11=OFF",
-      "-DDAWN_USE_WINDOWS_UI=OFF",
-      "-DDAWN_USE_BUILT_DXC=OFF",
-      "-DDAWN_DXC_ENABLE_ASSERTS_IN_NDEBUG=OFF",
-      "-DDAWN_ENABLE_SWIFTSHADER=OFF",
-      "-DDAWN_ALWAYS_ASSERT=OFF",
-      "-DDAWN_BUILD_NODE_BINDINGS=OFF",
-      "-DDAWN_BUILD_FUZZERS=OFF",
-      "-DDAWN_EMIT_COVERAGE=OFF",
-      "-DTINT_BUILD_CMD_TOOLS=OFF",
-      "-DTINT_BUILD_SPV_READER=OFF",
-      "-DTINT_BUILD_GLSL_WRITER=OFF",
-      "-DTINT_BUILD_GLSL_VALIDATOR=OFF",
-      "-DTINT_BUILD_WGSL_WRITER=OFF",
-      "-DTINT_BUILD_NULL_WRITER=OFF",
-      "-DTINT_BUILD_FUZZERS=OFF",
-      "-DTINT_BUILD_FUZZER_VULKAN_SUPPORT=OFF",
-      "-DTINT_BUILD_TINTD=OFF",
-      "-DTINT_BUILD_AS_OTHER_OS=OFF",
-      "-DTINT_BUILD_MESA=OFF",
-      "-DTINT_ENABLE_IR_DUMPING=OFF",
-      "-DTINT_ENABLE_IR_VALIDATION_ASSERTS=OFF",
-      "-DTINT_ENABLE_BREAK_IN_DEBUGGER=OFF",
-      "-DTINT_RANDOMIZE_HASHES=OFF",
-'''
-if needle not in text:
-    raise SystemExit("could not find Dawn Tint install option")
-path.write_text(text.replace(needle, insert))
-PY
-  fi
-
-  if [[ -f "$build_dawn" ]]; then
-    "$python_cmd" - "$build_dawn" <<'PY'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-text = path.read_text()
-old = '''      f"-DDAWN_ENABLE_SPIRV_VALIDATION={gn_bool_to_cmake(args.dawn_enable_vulkan)}",
-'''
-new = '''      "-DDAWN_ENABLE_SPIRV_VALIDATION=OFF",
-'''
-if old in text:
-    path.write_text(text.replace(old, new))
-PY
-  fi
-}
-
-prepare_unified_static_package_target() {
-  local build_config="$skia/gn/BUILDCONFIG.gn"
-  local root_build="$skia/BUILD.gn"
-  local package_gn_dir="$skia/skia_prebuilt_package_gen"
-
-  "$python_cmd" - "$build_config" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-needle = '''set_defaults("component") {
-  configs = default_configs
-  if (!is_component_build) {
-    complete_static_lib = true
-  }
-}
-'''
-replacement = '''set_defaults("component") {
-  configs = default_configs
-}
-'''
-if needle in text:
-    path.write_text(text.replace(needle, replacement))
-elif replacement not in text:
-    raise SystemExit("could not update component static-library defaults")
-PY
-
-  "$python_cmd" - "$root_build" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-start = "# SKIA_PREBUILT_PACKAGE_BEGIN"
-end = "# SKIA_PREBUILT_PACKAGE_END"
-block = f'''
-{start}
-static_library("skia_prebuilt_package") {{
-  complete_static_lib = true
-  sources = [ "skia_prebuilt_package_gen/empty.cpp" ]
-  public_deps = [
-    "//:skia",
-    "//modules/skparagraph:skparagraph",
-    "//modules/skresources:skresources",
-    "//modules/skshaper:skshaper",
-    "//modules/skunicode",
-    "//modules/svg:svg",
-  ]
-}}
-{end}
-'''
-if start not in text:
-    path.write_text(text.rstrip() + "\n" + block)
-PY
-
-  mkdir -p "$package_gn_dir"
-  cat > "$package_gn_dir/empty.cpp" <<'CPP'
-namespace skia_prebuilt_package {
-void anchor() {}
-}
-CPP
-}
-
 mkdir -p "$package_dir"
-patch_dawn_cmake_helpers
-prepare_unified_static_package_target
+"$python_cmd" "$root/scripts/prepare_skia_build_tree.py" --skia "$skia"
 
-target_args="$(mktemp)"
+config_dir="$root/build-config"
+target_config="$config_dir/$package_target.gn"
+if [[ ! -f "$config_dir/common.gn" || ! -f "$target_config" ]]; then
+  echo "missing GN build config for $package_target" >&2
+  exit 1
+fi
+
 case "$package_target" in
   macos-arm64)
     package_arch="arm64"
-    cat > "$target_args" <<'ARGS'
-target_os="mac"
-target_cpu="arm64"
-skia_use_fonthost_mac=true
-skia_use_freetype=false
-skia_use_fontconfig=false
-dawn_enable_metal=true
-dawn_enable_vulkan=false
-dawn_enable_d3d12=false
-ARGS
     ;;
   macos-x64)
     package_arch="x86_64"
-    cat > "$target_args" <<'ARGS'
-target_os="mac"
-target_cpu="x64"
-skia_use_fonthost_mac=true
-skia_use_freetype=false
-skia_use_fontconfig=false
-dawn_enable_metal=true
-dawn_enable_vulkan=false
-dawn_enable_d3d12=false
-ARGS
     ;;
   ios-arm64)
     package_arch="arm64"
     SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
     export SKIA_DAWN_IOS_SYSROOT
     export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
-    cat > "$target_args" <<'ARGS'
-target_os="ios"
-target_cpu="arm64"
-ios_min_target="15.0"
-skia_use_fonthost_mac=true
-skia_use_freetype=false
-skia_use_fontconfig=false
-dawn_enable_metal=true
-dawn_enable_vulkan=false
-dawn_enable_d3d12=false
-ARGS
     ;;
   ios-simulator-arm64)
     package_arch="arm64"
     SKIA_DAWN_IOS_SYSROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)"
     export SKIA_DAWN_IOS_SYSROOT
     export SKIA_DAWN_IOS_DEPLOYMENT_TARGET="15.0"
-    cat > "$target_args" <<'ARGS'
-target_os="ios"
-target_cpu="arm64"
-ios_use_simulator=true
-ios_min_target="15.0"
-skia_use_fonthost_mac=true
-skia_use_freetype=false
-skia_use_fontconfig=false
-dawn_enable_metal=true
-dawn_enable_vulkan=false
-dawn_enable_d3d12=false
-ARGS
     ;;
   android-arm64)
     package_arch="arm64"
@@ -356,64 +90,18 @@ ARGS
     export AR="$android_toolchain/llvm-ar"
     export RANLIB="$android_toolchain/llvm-ranlib"
     export LLVM_NM="$android_toolchain/llvm-nm"
-    cat > "$target_args" <<ARGS
-target_os="android"
-target_cpu="arm64"
-ndk="$android_ndk"
-ndk_api=${ANDROID_API_LEVEL:-29}
-skia_use_fonthost_mac=false
-skia_use_freetype=true
-skia_use_system_freetype2=false
-skia_use_freetype_woff2=false
-skia_use_freetype_svg=true
-skia_use_freetype_zlib=true
-skia_use_freetype_zlib_bundled=true
-skia_use_fontconfig=false
-skia_enable_fontmgr_android=true
-skia_enable_fontmgr_android_ndk=false
-dawn_enable_metal=false
-dawn_enable_vulkan=true
-dawn_enable_d3d12=false
-extra_cflags=["-mno-outline-atomics"]
-ARGS
     ;;
   windows-x64)
     package_arch="x64"
     export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
     package_lib="$lib_dir/skia.lib"
-    cat > "$target_args" <<'ARGS'
-target_os="win"
-target_cpu="x64"
-is_trivial_abi=false
-skia_use_fonthost_mac=false
-skia_use_freetype=false
-skia_use_fontconfig=false
-skia_enable_fontmgr_win=true
-skia_enable_fontmgr_win_gdi=true
-dawn_enable_metal=false
-dawn_enable_vulkan=false
-dawn_enable_d3d12=true
-ARGS
     ;;
   windows-arm64)
     package_arch="arm64"
     export SKIA_DAWN_WINDOWS_HOST_TOOL_CPU="x64"
     lib_ext="lib"
     package_lib="$lib_dir/skia.lib"
-    cat > "$target_args" <<'ARGS'
-target_os="win"
-target_cpu="arm64"
-is_trivial_abi=false
-skia_use_fonthost_mac=false
-skia_use_freetype=false
-skia_use_fontconfig=false
-skia_enable_fontmgr_win=true
-skia_enable_fontmgr_win_gdi=true
-dawn_enable_metal=false
-dawn_enable_vulkan=false
-dawn_enable_d3d12=true
-ARGS
     ;;
   *)
     echo "unknown SKIA_PACKAGE_TARGET: $package_target" >&2
@@ -421,60 +109,15 @@ ARGS
     ;;
 esac
 
-cat > "$args_file" <<'ARGS'
-is_debug=false
-is_official_build=true
-is_component_build=false
-
-skia_enable_graphite=true
-skia_use_dawn=true
-skia_enable_ganesh=false
-skia_use_gl=false
-skia_use_metal=false
-skia_use_vulkan=false
-skia_use_direct3d=false
-skia_use_angle=false
-
-skia_use_icu=false
-skia_use_system_icu=false
-skia_use_runtime_icu=false
-skia_use_client_icu=false
-skia_use_bidi=true
-skia_use_libgrapheme=true
-skia_use_icu4x=false
-
-skia_use_harfbuzz=true
-skia_use_system_harfbuzz=false
-skia_enable_skshaper=true
-skia_enable_skparagraph=true
-
-skia_enable_svg=true
-skia_use_expat=true
-skia_use_system_expat=false
-skia_enable_skottie=false
-
-skia_enable_pdf=false
-skia_enable_tools=false
-skia_enable_gpu_debug_layers=false
-
-skia_use_libpng_decode=true
-skia_use_libpng_encode=true
-skia_use_system_libpng=false
-skia_use_libjpeg_turbo_decode=true
-skia_use_libjpeg_turbo_encode=true
-skia_use_system_libjpeg_turbo=false
-skia_use_libwebp_decode=true
-skia_use_libwebp_encode=true
-skia_use_system_libwebp=false
-skia_use_dng_sdk=false
-skia_use_piex=false
-skia_use_wuffs=true
-skia_use_zlib=true
-skia_use_system_zlib=false
-ARGS
-cat "$target_args" >> "$args_file"
-rm -f "$target_args"
-# SKIA_OUT_CACHE_INPUT_END
+{
+  cat "$config_dir/common.gn"
+  printf '\n'
+  cat "$target_config"
+  if [[ "$package_target" == "android-arm64" ]]; then
+    printf '\nndk="%s"\n' "$android_ndk"
+    printf 'ndk_api=%s\n' "${ANDROID_API_LEVEL:-29}"
+  fi
+} > "$args_file"
 
 "$python_cmd" - "$args_file" "$package_target" <<'PY'
 from pathlib import Path
