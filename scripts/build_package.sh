@@ -42,6 +42,7 @@ if [[ ! -f "$skia/BUILD.gn" ]]; then
   exit 1
 fi
 
+# SKIA_OUT_CACHE_INPUT_BEGIN
 patch_dawn_cmake_helpers() {
   local cmake_utils="$skia/third_party/dawn/cmake_utils.py"
   local build_dawn="$skia/third_party/dawn/build_dawn.py"
@@ -473,6 +474,7 @@ skia_use_system_zlib=false
 ARGS
 cat "$target_args" >> "$args_file"
 rm -f "$target_args"
+# SKIA_OUT_CACHE_INPUT_END
 
 "$python_cmd" - "$args_file" "$package_target" <<'PY'
 from pathlib import Path

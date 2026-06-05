@@ -151,13 +151,7 @@ jobs:
         run: |
           set -euo pipefail
           source_hash="$(git hash-object scripts/prepare_source.sh)"
-          out_hash="$(
-            git hash-object \
-              scripts/build_package.sh \
-              scripts/merge_static_object_closure.py \
-              scripts/package_headers.py |
-            git hash-object --stdin
-          )"
+          out_hash="$(python3 scripts/skia_out_cache_key.py)"
           echo "source=$source_hash" >> "$GITHUB_OUTPUT"
           echo "out=$out_hash" >> "$GITHUB_OUTPUT"
 
