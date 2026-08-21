@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_tag:
-        description: "Immutable package tag, for example skia-chrome-m150-r0"
+        description: "Immutable package tag, for example skia-chrome-m153-r0"
         required: true
         type: string
 
@@ -18,9 +18,9 @@ concurrency:
 
 env:
   SKIA_REPO: https://skia.googlesource.com/skia.git
-  SKIA_REF: refs/heads/chrome/m150
-  SKIA_LABEL: chrome/m150
-  SKIA_REF_SLUG: chrome-m150
+  SKIA_REF: refs/heads/chrome/m153
+  SKIA_LABEL: chrome/m153
+  SKIA_REF_SLUG: chrome-m153
   SKIA_SOURCE_CACHE_EPOCH: v1
   SKIA_OUT_CACHE_EPOCH: v1
   ANDROID_NDK_VERSION: 27.3.13750724

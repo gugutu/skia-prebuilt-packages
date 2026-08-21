@@ -2,8 +2,8 @@
 set -euo pipefail
 
 mode="${1:-all}"
-skia_ref="${SKIA_REF:-refs/heads/chrome/m150}"
-skia_label="${SKIA_LABEL:-chrome/m150}"
+skia_ref="${SKIA_REF:-refs/heads/chrome/m153}"
+skia_label="${SKIA_LABEL:-chrome/m153}"
 package_tag="${SKIA_PACKAGE_TAG:-}"
 if [[ -z "$package_tag" && "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
   package_tag="${GITHUB_REF_NAME:-}"
@@ -28,7 +28,9 @@ out_dir="out/$package_target"
 package_dir="$root/work/package/$package_target"
 lib_dir="$package_dir/lib"
 include_dir="$package_dir/include"
+harfbuzz_include_dir="$include_dir/harfbuzz"
 license_dir="$package_dir/LICENSES"
+abi_manifest="$package_dir/abi.json"
 args_file="$package_dir/gn_args.txt"
 lib_ext="a"
 package_lib="$lib_dir/lib_skia.a"
@@ -128,7 +130,7 @@ if [[ "$mode" == "build" ]]; then
   exit 0
 fi
 
-rm -rf "$lib_dir" "$include_dir" "$license_dir"
+rm -rf "$lib_dir" "$include_dir" "$license_dir" "$abi_manifest"
 mkdir -p "$lib_dir" "$include_dir" "$license_dir"
 
 echo "::group::package static library"
@@ -175,6 +177,18 @@ echo "::group::complete and verify package headers"
   --sdk "$include_dir/skia"
 echo "::endgroup::"
 
+echo "::group::package bundled HarfBuzz C ABI"
+"$python_cmd" "$root/scripts/package_harfbuzz_headers.py" \
+  --skia "$skia" \
+  --destination "$harfbuzz_include_dir"
+nm_cmd="${LLVM_NM:-nm}"
+"$python_cmd" "$root/scripts/verify_package_abi.py" \
+  --library "$package_lib" \
+  --harfbuzz-include "$harfbuzz_include_dir" \
+  --nm "$nm_cmd" \
+  --output "$abi_manifest"
+echo "::endgroup::"
+
 {
   echo "skia_ref=$skia_ref"
   echo "skia_label=$skia_label"
@@ -182,6 +196,8 @@ echo "::endgroup::"
   echo "target=$package_target"
   echo "library=lib/$(basename "$package_lib")"
   echo "include_path=include/skia"
+  echo "include_paths=include/skia,include/harfbuzz"
+  echo "abi_manifest=abi.json"
 } > "$package_dir/manifest.txt"
 
 echo "::group::collect licenses"
@@ -348,7 +364,7 @@ if target not in target_link:
     raise SystemExit(f"missing metadata target mapping: {target}")
 
 metadata = {
-    "schema_version": 1,
+    "schema_version": 2,
     "target": target,
     "skia_ref": skia_ref,
     "skia_label": skia_label,
@@ -358,6 +374,7 @@ metadata = {
     "libraries": [f"lib/{library}" for library in libraries],
     "include_dirs": [
         "include/skia",
+        "include/harfbuzz",
     ],
     "cxx_standard": "c++20",
     "backend": {
@@ -368,6 +385,11 @@ metadata = {
     "features": {
         "skparagraph": True,
         "skshaper": True,
+        "harfbuzz": {
+            "bundled": True,
+            "public_c_headers": True,
+            "abi_manifest": "abi.json",
+        },
         "skunicode": "libgrapheme",
         "svg": True,
         "codec_png": True,

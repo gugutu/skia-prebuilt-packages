@@ -105,7 +105,8 @@ cat > "$asset_dir/release-notes.md" <<EOF
 Skia prebuilt packages for $tag.
 
 Assets:
-- Per-target package archives contain \`include/\`, \`lib/\`, \`LICENSES/\`, \`metadata.json\`, \`manifest.txt\`, and \`gn_args.txt\`.
+- Per-target package archives contain \`include/\`, \`lib/\`, \`LICENSES/\`, \`abi.json\`, \`metadata.json\`, \`manifest.txt\`, and \`gn_args.txt\`.
+- \`include/harfbuzz\` exposes the public C headers for the exact HarfBuzz instance already linked into the Skia archive; \`abi.json\` records the verified symbol contract.
 - \`manifest.json\` maps Rust targets to package assets and records link metadata.
 - \`checksums.txt\` contains SHA-256 checksums for release assets.
 

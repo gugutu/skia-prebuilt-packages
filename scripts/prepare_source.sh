@@ -2,8 +2,8 @@
 set -euo pipefail
 
 root="$(pwd)"
-skia_ref="${SKIA_REF:-refs/heads/chrome/m150}"
-skia_label="${SKIA_LABEL:-chrome/m150}"
+skia_ref="${SKIA_REF:-refs/heads/chrome/m153}"
+skia_label="${SKIA_LABEL:-chrome/m153}"
 repo_url="${SKIA_REPO:-https://skia.googlesource.com/skia.git}"
 skia="${SKIA_SOURCE_DIR:-$root/work/skia-source}"
 python_cmd="${PYTHON:-python3}"
