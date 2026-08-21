@@ -43,6 +43,8 @@ HARFBUZZ_REQUIRED_SYMBOLS = {
     "hb_shape",
 }
 
+FORBIDDEN_UNDEFINED_PREFIXES = ("__real_",)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -74,6 +76,29 @@ def defined_symbols(nm: str, library: Path) -> set[str]:
     return symbols
 
 
+def undefined_symbols(nm: str, library: Path) -> set[str]:
+    result = subprocess.run(
+        [nm, "-u", str(library)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    symbols: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        symbol = fields[-1]
+        # Mach-O prefixes C symbols with one underscore; ELF does not. The
+        # package verifier can inspect a foreign-target archive, so infer this
+        # from the linker-owned spelling rather than from the host OS.
+        if symbol.startswith("___real_"):
+            symbol = symbol[1:]
+        symbols.add(symbol)
+    return symbols
+
+
 def main() -> int:
     args = parse_args()
     if not args.library.is_file():
@@ -89,13 +114,21 @@ def main() -> int:
     )
     symbols = defined_symbols(args.nm, args.library)
     missing_definitions = sorted(HARFBUZZ_REQUIRED_SYMBOLS - symbols)
-    if missing_declarations or missing_definitions:
+    forbidden_undefined = sorted(
+        symbol
+        for symbol in undefined_symbols(args.nm, args.library)
+        if symbol.startswith(FORBIDDEN_UNDEFINED_PREFIXES)
+    )
+    if missing_declarations or missing_definitions or forbidden_undefined:
         if missing_declarations:
             print("Missing HarfBuzz declarations:")
             print("\n".join(f"  {symbol}" for symbol in missing_declarations))
         if missing_definitions:
             print("Missing HarfBuzz definitions:")
             print("\n".join(f"  {symbol}" for symbol in missing_definitions))
+        if forbidden_undefined:
+            print("Final-executable linker symbols leaked into the static SDK:")
+            print("\n".join(f"  {symbol}" for symbol in forbidden_undefined))
         return 1
 
     manifest = {
@@ -105,7 +138,10 @@ def main() -> int:
                 "include_dir": "include/harfbuzz",
                 "headers": [path.name for path in headers],
                 "verified_symbols": sorted(HARFBUZZ_REQUIRED_SYMBOLS),
-            }
+            },
+            "link_contract": {
+                "forbidden_undefined_prefixes": list(FORBIDDEN_UNDEFINED_PREFIXES),
+            },
         },
     }
     args.output.write_text(

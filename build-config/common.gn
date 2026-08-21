@@ -4,6 +4,10 @@ is_component_build=false
 
 skia_enable_graphite=true
 skia_enable_threadlocal_strikecache=true
+# The package is embedded into an application-owned process. PartitionAlloc's
+# allocator shim is a final-executable concern and requires Chromium's linker
+# --wrap contract; it must not leak into this reusable static SDK.
+skia_use_partition_alloc=false
 skia_use_dawn=false
 skia_enable_ganesh=false
 skia_use_gl=false
