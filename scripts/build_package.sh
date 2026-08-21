@@ -117,7 +117,7 @@ fi
 
 if [[ "$mode" != "package" ]]; then
   echo "::group::gn gen"
-  "$gn_bin" gen "$out_dir" --args="$(tr '\n' ' ' < "$args_file")"
+  "$gn_bin" gen "$out_dir" --args="$(<"$args_file")"
   echo "::endgroup::"
 
   echo "::group::ninja"
